@@ -113,10 +113,28 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             return json.loads(raw)
         return {}
 
+    def end_headers(self):
+        # Prevent browser caching of static JS/CSS in local desktop application
+        if hasattr(self, 'path') and any(self.path.endswith(ext) for ext in ['.js', '.css', '.html']):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        super().end_headers()
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+
+        # Favicon icon handler (returns micro-svg icon to avoid 404)
+        if path == "/favicon.ico":
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🔬</text></svg>'
+            self.wfile.write(svg.encode("utf-8"))
+            return
 
         # API routing
         if path.startswith("/api/"):
@@ -126,8 +144,63 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"服务器内部错误: {str(e)}", status=500)
             return
 
-        # Default route serves index.html
-        if path == "/" or path == "":
+        # Serve index.html with dynamic status detection
+        if path in ["/", "", "/index.html"]:
+            html_path = os.path.join(WEB_DIR, "index.html")
+            if os.path.exists(html_path):
+                try:
+                    with open(html_path, "r", encoding="utf-8") as f:
+                        html_content = f.read()
+
+                    cfg = load_config()
+                    is_initialized = cfg.get("initialized", False)
+                    work_dir = cfg.get("work_dir", "")
+                    rep_doc = cfg.get("report_doctor", "张医生")
+                    rev_doc = cfg.get("review_doctor", "李主任")
+
+                    # If not initialized, directly display setup wizard modal on page load
+                    if not is_initialized:
+                        html_content = html_content.replace(
+                            'id="setup-wizard-modal" class="wizard-overlay" style="display: none;"',
+                            'id="setup-wizard-modal" class="wizard-overlay" style="display: flex;"'
+                        )
+                        if work_dir:
+                            html_content = re.sub(
+                                r'id="wizard-work-dir" class="form-control" value="[^"]*"',
+                                f'id="wizard-work-dir" class="form-control" value="{work_dir}"',
+                                html_content
+                            )
+                        if rep_doc:
+                            html_content = re.sub(
+                                r'id="wizard-report-doc" class="form-control" value="[^"]*"',
+                                f'id="wizard-report-doc" class="form-control" value="{rep_doc}"',
+                                html_content
+                            )
+                        if rev_doc:
+                            html_content = re.sub(
+                                r'id="wizard-review-doc" class="form-control" value="[^"]*"',
+                                f'id="wizard-review-doc" class="form-control" value="{rev_doc}"',
+                                html_content
+                            )
+                    else:
+                        html_content = html_content.replace(
+                            'id="setup-wizard-modal" class="wizard-overlay" style="display: flex;"',
+                            'id="setup-wizard-modal" class="wizard-overlay" style="display: none;"'
+                        )
+
+                    body = html_content.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                except Exception as e:
+                    print(f"[Server] 动态渲染 index.html 失败: {e}")
+
             self.path = "/index.html"
             return super().do_GET()
 

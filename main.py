@@ -37,14 +37,29 @@ def main():
         except Exception as e:
             print(f"[System] 初始化目录提示: {e}")
             
-    url = f"http://127.0.0.1:{port}"
+    # Bind server first with automatic port fallback
+    actual_port = port
+    httpd = None
+    for p in range(port, port + 10):
+        try:
+            httpd = run_server(port=p)
+            actual_port = p
+            break
+        except OSError as e:
+            print(f"[System] 端口 {p} 无法绑定 ({e})，正在尝试备用端口 {p+1}...")
+
+    if not httpd:
+        print(f"[System] 错误：无法在端口 {port}~{port+9} 范围内启动服务，请检查网络权限。")
+        return
+
+    url = f"http://127.0.0.1:{actual_port}"
     print(f"[System] WebUI 访问地址: {url}")
     print("[System] 正在启动后台服务，按 Ctrl+C 可停止系统...")
 
-    # Auto open browser in a background thread after a brief delay
+    # Auto open browser in a background thread
     if cfg.get("auto_open_browser", True):
         def open_browser():
-            time.sleep(1.2)
+            time.sleep(0.8)
             try:
                 webbrowser.open(url)
             except Exception as e:
@@ -52,7 +67,6 @@ def main():
         threading.Thread(target=open_browser, daemon=True).start()
 
     try:
-        httpd = run_server(port=port)
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[System] 系统已安全关闭。")

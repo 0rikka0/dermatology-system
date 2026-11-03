@@ -1,5 +1,5 @@
 // 皮肤病理报告系统 - Frontend JavaScript
-document.addEventListener("DOMContentLoaded", () => {
+function startApp() {
   // Global state
   const state = {
     initialized: false,
@@ -181,6 +181,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (!data.initialized) {
         setupWizardModal.style.display = "flex";
+        const wizWorkDir = document.getElementById("wizard-work-dir");
+        const wizRepDoc = document.getElementById("wizard-report-doc");
+        const wizRevDoc = document.getElementById("wizard-review-doc");
+        if (wizWorkDir && data.work_dir) wizWorkDir.value = data.work_dir;
+        if (wizRepDoc && data.report_doctor) wizRepDoc.value = data.report_doctor;
+        if (wizRevDoc && data.review_doctor) wizRevDoc.value = data.review_doctor;
       } else {
         setupWizardModal.style.display = "none";
         currentWorkdirDisplay.textContent = data.work_dir ? data.work_dir.split(/[\\/]/).pop() : "已连接工作目录";
@@ -1687,15 +1693,6 @@ document.addEventListener("DOMContentLoaded", () => {
       btnMkArchiveReport.innerHTML = `<span>📦 一键归档 (2.8)</span>`;
     }
   });
-        showToast(`归档失败: ${data.error}`, "error");
-      }
-    } catch (e) {
-      showToast(`归档异常: ${e.message}`, "error");
-    } finally {
-      btnMkArchiveReport.disabled = false;
-      btnMkArchiveReport.innerHTML = `<span>📦 一键归档 (2.8)</span>`;
-    }
-  });
 
   // Preview button in Making
   btnMkPreview.addEventListener("click", () => {
@@ -3074,4 +3071,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Start initialization check
   checkSystemStatus();
-});
+}
+
+// Safely execute startApp whether DOMContentLoaded has already fired or not
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", startApp);
+} else {
+  startApp();
+}
