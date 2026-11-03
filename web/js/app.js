@@ -1638,6 +1638,9 @@ function startApp() {
 
       if (data.success) {
         showToast(data.message, "success");
+        if (data.duplicate_clinical_photos) {
+          alert(data.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，无法自动归档临床照片！\n已在资源管理器中同时打开【临床照片母目录】和【特殊归档目标目录】，请操作者手动筛选并将正确的照片文件夹归档复制。");
+        }
         makingState.selectedPatient = data.patient;
         mkSaveStatus.textContent = `已保存并输出 (${new Date().toLocaleTimeString()})`;
         mkSaveStatus.style.color = "var(--success)";
@@ -1679,7 +1682,10 @@ function startApp() {
       const data = await res.json();
 
       if (data.success) {
-        showToast(`患者 [${p.name}] 档案打包归档成功！`, "success");
+        showToast(`患者 [${p.name}] 报告归档成功！已保存至【已归档报告】。`, "success");
+        if (data.duplicate_clinical_photos) {
+          alert(data.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，无法自动归档临床照片！\n已在资源管理器中同时打开【临床照片母目录】和【特殊归档目标目录】，请操作者手动筛选并将正确的照片文件夹归档复制。");
+        }
         makingState.selectedPatient = data.patient;
         loadMakingPatients();
       } else {
@@ -1805,7 +1811,10 @@ function startApp() {
         body: JSON.stringify({ name: p.name, pathology_no: p.pathology_no })
       });
       const data = await res.json();
-      if (data.found) {
+      if (data.multiple) {
+        alert(data.message);
+        showToast(data.message, "warning");
+      } else if (data.found) {
         showToast(data.message, "success");
       } else {
         showToast(data.message, "error");
@@ -2193,6 +2202,9 @@ function startApp() {
 
       if (data.success) {
         showToast("审核内容已保存，并已自动同步覆盖报告输出及归档目录！", "success");
+        if (data.duplicate_clinical_photos) {
+          alert(data.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，无法自动归档临床照片！\n已在资源管理器中同时打开【临床照片母目录】和【特殊归档目标目录】，请操作者手动筛选并将正确的照片文件夹归档复制。");
+        }
         reviewState.selectedPatient = data.patient;
         revSaveStatus.textContent = `已覆盖同步 (${new Date().toLocaleTimeString()})`;
         revSaveStatus.style.color = "var(--success)";
@@ -2262,7 +2274,10 @@ function startApp() {
         });
         const data = await res.json();
         if (data.success) {
-          showToast(`患者 [${p.name}] 档案归档成功！已放入【特殊患者归档\\完成审核】与【按患者归档】。`, "success");
+          showToast(`患者 [${p.name}] 档案归档成功！已放入【特殊患者归档\\完成审核】与【已归档报告】。`, "success");
+          if (data.duplicate_clinical_photos) {
+            alert(data.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，无法自动归档临床照片！\n已在资源管理器中同时打开【临床照片母目录】和【特殊归档目标目录】，请操作者手动筛选并将正确的照片文件夹归档复制。");
+          }
           reviewState.selectedPatient = data.patient;
           loadReviewPatients();
         } else {
@@ -2305,7 +2320,14 @@ function startApp() {
         body: JSON.stringify({ name: p.name, pathology_no: p.pathology_no })
       });
       const data = await res.json();
-      showToast(data.message, data.found ? "success" : "error");
+      if (data.multiple) {
+        alert(data.message);
+        showToast(data.message, "warning");
+      } else if (data.found) {
+        showToast(data.message, "success");
+      } else {
+        showToast(data.message, "error");
+      }
     } catch (e) {
       showToast("查询临床照片异常: " + e.message, "error");
     }
@@ -2590,10 +2612,10 @@ function startApp() {
         </div>
         <div class="output-item-actions">
           <button type="button" class="btn btn-secondary btn-sm btn-out-preview" title="直接预览当前报告">👁️ 预览</button>
-          <button type="button" class="btn btn-secondary btn-sm btn-out-word" title="在外部Word中打开报告（统一归档\\病理报告输出）">📄 Word</button>
-          <button type="button" class="btn btn-secondary btn-sm btn-out-folder" title="在资源管理器中打开报告对应的目录（按患者归档）">📂 归档目录</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-out-word" title="在外部Word中打开报告（未归档报告\\病理报告输出）">📄 Word</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-out-folder" title="在资源管理器中定位归档报告（已归档报告）">📂 归档位置</button>
           <button type="button" class="btn btn-secondary btn-sm btn-out-print" title="单独打印当前报告第一页" style="color: #0369a1; border-color: #bae6fd;">🖨️ 打印第1页</button>
-          <button type="button" class="btn btn-secondary btn-sm btn-out-revoke-arch" title="撤销归档：修改数据库并从按患者归档中移除对应文件" style="color: #c2410c; border-color: #fed7aa;">↩️ 撤销归档</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-out-revoke-arch" title="撤销归档：修改数据库并从已归档报告中移除对应文件" style="color: #c2410c; border-color: #fed7aa;">↩️ 撤销归档</button>
           <button type="button" class="btn btn-secondary btn-sm btn-out-revoke-rev" ${!isSpecial ? "disabled" : ""} title="${isSpecial ? '撤销审核：返回待审核列表并恢复对应特殊归档' : '常规报告无需审核'}" style="${isSpecial ? 'color: #9333ea; border-color: #e9d5ff;' : 'opacity: 0.5; cursor: not-allowed;'}">↩️ 撤销审核</button>
         </div>
       `;
@@ -2669,7 +2691,7 @@ function startApp() {
 
       // 5. Revoke Archive
       card.querySelector(".btn-out-revoke-arch").addEventListener("click", async () => {
-        if (!confirm(`确定要撤销患者 [${p.name}] (病理号: ${p.pathology_no}) 的归档吗？\n撤销后将自动从“按患者归档”中移除该文件夹，并将其从本列表移出。`)) {
+        if (!confirm(`确定要撤销患者 [${p.name}] (病理号: ${p.pathology_no}) 的归档吗？\n撤销后将自动从“已归档报告”中移除该报告文件，并将其从本列表移出。`)) {
           return;
         }
         try {
@@ -3071,6 +3093,34 @@ function startApp() {
 
   // Start initialization check
   checkSystemStatus();
+
+  // Disclaimer modal controls (显示免责声明)
+  const disclaimerModal = document.getElementById("disclaimer-modal");
+  const btnDisclaimerAgree = document.getElementById("btn-disclaimer-agree");
+  const btnDisclaimerExit = document.getElementById("btn-disclaimer-exit");
+
+  if (btnDisclaimerAgree && disclaimerModal) {
+    btnDisclaimerAgree.addEventListener("click", () => {
+      disclaimerModal.style.display = "none";
+    });
+  }
+
+  if (btnDisclaimerExit && disclaimerModal) {
+    btnDisclaimerExit.addEventListener("click", async () => {
+      try {
+        await fetch("/api/system/exit", { method: "POST" });
+      } catch (e) {}
+      document.body.innerHTML = `
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; background: #f8fafc; color: #334155; text-align: center; padding: 20px;">
+          <h2 style="color: #64748b; margin-bottom: 12px; font-size: 24px;">⚖️ 已安全退出系统</h2>
+          <p style="color: #94a3b8; font-size: 15px; max-width: 480px; line-height: 1.6;">您已拒绝免责声明，系统后台服务已停止。您可以直接关闭当前浏览器窗口或标签页。</p>
+        </div>
+      `;
+      try {
+        window.close();
+      } catch (e) {}
+    });
+  }
 }
 
 // Safely execute startApp whether DOMContentLoaded has already fired or not

@@ -53,13 +53,13 @@ def run_tests():
         # -------------------------------------------------------------
         print("\n[TEST 1] 验证表格上方多余分隔线去除及各规格行数补全...")
         specs = [
-            (1, 14, 10),
-            (2, 14, 8),
-            (3, 14, 10),
+            (1, 15, 10),
+            (2, 14, 10),
+            (3, 15, 10),
             (4, 10, 6),
             (6, 10, 6),
-            (7, 4, 3),
-            (9, 4, 3)
+            (7, 5, 3),
+            (9, 5, 3)
         ]
 
         for img_cnt, exp_micro, exp_diag in specs:
@@ -224,7 +224,7 @@ def run_tests():
         approved_p = mark_patient_approved(db_path, "B2026110201")
         assert approved_p["review_status"] == "完成审核"
 
-        # 4.4 完成审核后归档 (从 特殊患者归档 中取出并放入 完成审核，同时存入 按患者归档)
+        # 4.4 完成审核后归档 (从 特殊患者归档 中取出并放入 完成审核，同时存入 已归档报告)
         arch_res_rev = archive_patient_report(temp_dir, approved_p, report_docx, is_from_review=True)
         assert arch_res_rev["success"] is True
 
@@ -236,16 +236,16 @@ def run_tests():
         approved_target_dir = os.path.join(temp_dir, "特殊患者归档", "完成审核", "B2026110201_王病房_黑色素瘤待排")
         assert os.path.exists(approved_target_dir), "特殊患者归档/完成审核 未找到归档文件夹"
 
-        # 验证 照常放入 按患者归档
-        patient_archive_dir = os.path.join(temp_dir, "按患者归档", "B2026110201_王病房_黑色素瘤待排")
-        assert os.path.exists(patient_archive_dir), "按患者归档 未找到归档文件夹"
-        print("  -> 审核完成后归档：从待审/组化取出并转移至 完成审核，且常规存入 按患者归档 验证通过！")
+        # 验证 照常放入 已归档报告 (单文件，无子文件夹，无 [病理报告] 前缀)
+        patient_archive_file = os.path.join(temp_dir, "已归档报告", "B2026110201_王病房_黑色素瘤待排.docx")
+        assert os.path.exists(patient_archive_file), "已归档报告 未找到归档文件"
+        print("  -> 审核完成后归档：从待审/组化取出并转移至 完成审核，且常规存入 已归档报告 验证通过！")
 
         # 4.5 验证撤销归档
         revoke_res = revoke_patient_archive_files(temp_dir, approved_p)
         assert revoke_res["success"] is True
         assert not os.path.exists(approved_target_dir)
-        assert not os.path.exists(patient_archive_dir)
+        assert not os.path.exists(patient_archive_file)
         print("  -> 撤销归档联动清理验证通过！")
 
         print("\n=========================================")

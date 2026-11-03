@@ -104,7 +104,7 @@ def run_tests():
             "submission_date_raw": "2026-11-03",
             "report_doctor": "张医生",
             "review_doctor": "李主任",
-            "word_path": os.path.join(test_dir, "统一归档", "病理报告录入", "2026110301_张三.docx"),
+            "word_path": os.path.join(test_dir, "未归档报告", "病理报告录入", "2026110301_张三.docx"),
             "photo_dir": get_patient_photo_dir(test_dir, "2026110301", "张三")
         }
         os.makedirs(os.path.dirname(patient_data["word_path"]), exist_ok=True)
@@ -122,7 +122,7 @@ def run_tests():
         shutil.copy2(sample_img, img1_path)
         shutil.copy2(sample_img, img2_path)
 
-        clin_dir = os.path.join(test_dir, "统一归档", "临床照片", "张三")
+        clin_dir = os.path.join(test_dir, "未归档报告", "临床照片", "张三")
         os.makedirs(clin_dir, exist_ok=True)
         clin_img = os.path.join(clin_dir, "clinical_front.jpg")
         shutil.copy2(sample_img, clin_img)
@@ -194,25 +194,29 @@ def run_tests():
         report_making_data["review_doctor"] = "李主任"
         generate_report_file(TEMPLATES_DIR, final_doc_path, report_making_data)
 
-        # 审核完成标记与归档 (Requirement 3: 从特殊待审取出，放入完成审核与按患者归档)
+        # 审核完成标记与归档 (Requirement 3: 从特殊待审取出，放入完成审核与已归档报告)
         p_approved = mark_patient_approved(db_path, "2026110301")
         archive_res = archive_patient_report(test_dir, p_approved, final_doc_path, is_from_review=True)
         assert archive_res["success"] is True
-        main_arch = archive_res["archive_dir"]
-        assert os.path.exists(main_arch)
-        assert os.path.exists(os.path.join(main_arch, "临床照片", "clinical_front.jpg"))
-        assert os.path.exists(os.path.join(main_arch, "病理照片", "1.2.交界痣.jpg"))
-        assert any(f.endswith(".docx") for f in os.listdir(main_arch))
+        main_arch_file = archive_res["archive_file"]
+        assert os.path.exists(main_arch_file)
+        assert os.path.basename(main_arch_file) == f"{safe_name}.docx"
+
+        # 验证特殊患者归档保留完整包结构（包含照片）
+        spec_arch = os.path.join(test_dir, "特殊患者归档", "完成审核", safe_name)
+        assert os.path.exists(spec_arch)
+        assert os.path.exists(os.path.join(spec_arch, "临床照片", "clinical_front.jpg"))
+        assert os.path.exists(os.path.join(spec_arch, "病理照片", "1.2.交界痣.jpg"))
+        assert any(f.endswith(".docx") for f in os.listdir(spec_arch))
 
         # 验证从待审核/免疫组化中取出，放入完成审核
         assert not os.path.exists(pending_arch)
         assert not os.path.exists(ihc_arch)
-        assert os.path.exists(os.path.join(test_dir, "特殊患者归档", "完成审核", safe_name))
         
-        mark_patient_archived(db_path, "2026110301", main_arch)
+        mark_patient_archived(db_path, "2026110301", main_arch_file)
         p_arch = get_patient(db_path, "2026110301")
         assert p_arch["archived"] == 1
-        print(f"✓ 档案打包归档及特殊患者同步归档成功: {main_arch}")
+        print(f"✓ 档案打包归档及特殊患者同步归档成功: {main_arch_file}")
 
         # 同步覆盖验证
         sync_res = sync_review_overwrites(test_dir, p_arch, final_doc_path)

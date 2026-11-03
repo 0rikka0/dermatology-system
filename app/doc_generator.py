@@ -355,21 +355,21 @@ def generate_report_file(templates_dir, output_path, data):
     p_img_spacer.paragraph_format.line_spacing = Pt(15)
 
     # Reference target lines per image specification:
-    # 1.1. 单图: 镜下描述 14行 (含标题), 病理诊断 10行 (含标题)
-    # 1.2. 双图: 镜下描述 14行 (含标题), 病理诊断 8行 (含标题)
-    # 1.3. 三图: 镜下描述 14行 (含标题), 病理诊断 10行 (含标题)
+    # 1.1. 单图: 镜下描述 15行 (含标题), 病理诊断 10行 (含标题)
+    # 1.2. 双图: 镜下描述 14行 (含标题), 病理诊断 10行 (含标题)
+    # 1.3. 三图: 镜下描述 15行 (含标题), 病理诊断 10行 (含标题)
     # 1.4. 4-6图 (两行): 镜下描述 10行 (含标题), 病理诊断 6行 (含标题)
-    # 1.5. 7-9图 (三行): 镜下描述 4行 (含标题), 病理诊断 3行 (含标题)
+    # 1.5. 7-9图 (三行): 镜下描述 5行 (含标题), 病理诊断 3行 (含标题)
     if image_count == 1:
-        target_micro_lines, target_diag_lines = 14, 10
+        target_micro_lines, target_diag_lines = 15, 10
     elif image_count == 2:
-        target_micro_lines, target_diag_lines = 14, 8
-    elif image_count == 3:
         target_micro_lines, target_diag_lines = 14, 10
+    elif image_count == 3:
+        target_micro_lines, target_diag_lines = 15, 10
     elif image_count <= 6:
         target_micro_lines, target_diag_lines = 10, 6
     else:
-        target_micro_lines, target_diag_lines = 4, 3
+        target_micro_lines, target_diag_lines = 5, 3
 
     # Format 镜下描述 paragraph
     p_micro_obj = docx.text.paragraph.Paragraph(p_micro_elem, doc)
@@ -489,7 +489,22 @@ def generate_report_file(templates_dir, output_path, data):
     dir_p = os.path.dirname(output_path)
     if dir_p:
         os.makedirs(dir_p, exist_ok=True)
-    doc.save(output_path)
+
+    if os.path.exists(output_path):
+        try:
+            with open(output_path, "a+b"):
+                pass
+        except (PermissionError, IOError) as pe:
+            raise PermissionError(
+                f"报告文件被其他软件（如 Word 或 WPS）打开占用，无法写入！请先关闭该文件后重试保存。路径: {os.path.basename(output_path)}"
+            ) from pe
+
+    try:
+        doc.save(output_path)
+    except (PermissionError, IOError) as pe:
+        raise PermissionError(
+            f"保存报告文件失败（文件可能被 Word/WPS 打开占用或权限不足）: {os.path.basename(output_path)}"
+        ) from pe
     return output_path
 
 def update_report_file(templates_dir, doc_path, data):

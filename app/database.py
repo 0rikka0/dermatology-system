@@ -56,17 +56,26 @@ CREATE INDEX IF NOT EXISTS idx_patients_review ON patients(review_status);
 CREATE INDEX IF NOT EXISTS idx_patients_archived ON patients(archived);
 """
 
-def get_connection(db_path):
-    """Get SQLite database connection with row factory."""
+def get_connection(db_path, timeout=15.0):
+    """Get SQLite database connection with row factory and busy timeout."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=timeout)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout = 15000;")
+    except Exception:
+        pass
     return conn
 
 def init_db(db_path):
     """Initialize database tables, indexes and migrate new columns."""
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode = WAL;")
+            cursor.execute("PRAGMA synchronous = NORMAL;")
+        except Exception:
+            pass
         cursor.execute(CREATE_TABLE_SQL)
         cursor.executescript(CREATE_INDEX_SQL)
         

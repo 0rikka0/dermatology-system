@@ -127,7 +127,22 @@ def generate_signing_sheet_excel(work_dir, patients, start_date=None, end_date=N
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
 
-    wb.save(out_path)
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, "a+b"):
+                pass
+        except (PermissionError, IOError) as pe:
+            raise PermissionError(
+                f"签名单 Excel 文件被其他软件（如 Excel 或 WPS）打开占用，无法写入！请先关闭该文件后重试生成。路径: {os.path.basename(out_path)}"
+            ) from pe
+
+    try:
+        wb.save(out_path)
+    except (PermissionError, IOError) as pe:
+        raise PermissionError(
+            f"保存签名单 Excel 文件失败（可能被 Excel/WPS 打开占用或权限不足）: {os.path.basename(out_path)}"
+        ) from pe
+
     return {
         "success": True,
         "file_path": out_path,

@@ -24,6 +24,7 @@ from app.path_manager import (
     rename_patient_files_and_folders,
     find_clinical_photo_folder,
     get_clinical_photo_root_dir,
+    get_archive_root_dir,
     archive_patient_report,
     save_special_draft_queue,
     sync_review_overwrites,
@@ -31,6 +32,7 @@ from app.path_manager import (
     delete_patient_all_files,
     sync_status_file_operations,
     find_patient_archive_dir,
+    find_patient_archive_path,
     revoke_patient_archive_files,
     revoke_patient_approval_files,
     get_signing_sheet_dir
@@ -167,19 +169,19 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                         if work_dir:
                             html_content = re.sub(
                                 r'id="wizard-work-dir" class="form-control" value="[^"]*"',
-                                f'id="wizard-work-dir" class="form-control" value="{work_dir}"',
+                                lambda _: f'id="wizard-work-dir" class="form-control" value="{html.escape(work_dir)}"',
                                 html_content
                             )
                         if rep_doc:
                             html_content = re.sub(
                                 r'id="wizard-report-doc" class="form-control" value="[^"]*"',
-                                f'id="wizard-report-doc" class="form-control" value="{rep_doc}"',
+                                lambda _: f'id="wizard-report-doc" class="form-control" value="{html.escape(rep_doc)}"',
                                 html_content
                             )
                         if rev_doc:
                             html_content = re.sub(
                                 r'id="wizard-review-doc" class="form-control" value="[^"]*"',
-                                f'id="wizard-review-doc" class="form-control" value="{rev_doc}"',
+                                lambda _: f'id="wizard-review-doc" class="form-control" value="{html.escape(rev_doc)}"',
                                 html_content
                             )
                     else:
@@ -268,19 +270,44 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             if not p_file or not os.path.exists(p_file) or not os.path.isfile(p_file):
                 self.send_error(404, "Photo not found")
                 return
+
+            # Security: Path traversal protection
+            real_p = os.path.realpath(p_file).lower()
+            allowed = False
+            if work_dir and real_p.startswith(os.path.realpath(work_dir).lower()):
+                allowed = True
+            elif real_p.startswith(os.path.realpath(BASE_DIR).lower()):
+                allowed = True
+
+            if not allowed:
+                self.send_error(403, "Access to path forbidden")
+                return
+
+            # Check file size limit (100MB)
+            try:
+                f_size = os.path.getsize(p_file)
+            except Exception:
+                f_size = 0
+            if f_size > 100 * 1024 * 1024:
+                self.send_error(413, "Photo file exceeds maximum limit (100MB)")
+                return
+
             mime, _ = mimetypes.guess_type(p_file)
             mime = mime or "application/octet-stream"
             try:
-                with open(p_file, "rb") as f:
-                    content = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", mime)
-                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Content-Length", str(f_size))
                 self.send_header("Cache-Control", "max-age=3600")
                 self.end_headers()
-                self.wfile.write(content)
+                with open(p_file, "rb") as f:
+                    while True:
+                        chunk = f.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
             except Exception as e:
-                self.send_error(500, f"Error reading image: {e}")
+                pass
             return
 
         # Text templates search
@@ -616,10 +643,21 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             target_path = clin_res["path"]
             try:
                 subprocess.Popen(f'explorer "{os.path.normpath(target_path)}"')
-                if clin_res["found"]:
+                if clin_res.get("multiple"):
+                    matches_str = "、".join(clin_res.get("matches", []))
+                    self.send_json({
+                        "success": True,
+                        "found": False,
+                        "multiple": True,
+                        "matches": clin_res.get("matches", []),
+                        "path": target_path,
+                        "message": f"提示：检测到存在多个匹配的临床照片文件夹 ({matches_str})，已为您在资源管理器中打开临床照片母目录，请手动确认！"
+                    })
+                elif clin_res.get("found"):
                     self.send_json({
                         "success": True,
                         "found": True,
+                        "multiple": False,
                         "path": target_path,
                         "message": f"已在资源管理器中打开患者 [{p_name}] 临床照片文件夹"
                     })
@@ -627,6 +665,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                     self.send_json({
                         "success": False,
                         "found": False,
+                        "multiple": False,
                         "path": target_path,
                         "message": f"未找到患者 [{p_name}] 专属临床照片文件夹，已直接打开临床照片根目录"
                     })
@@ -692,13 +731,24 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             updated_p = get_patient(db_path, p_no)
             # Synchronize special patient draft queue if marked for review or IHC (Requirement 3)
-            save_special_draft_queue(work_dir, updated_p, final_report_path)
+            save_res = save_special_draft_queue(work_dir, updated_p, final_report_path)
+
+            extra_msg = ""
+            if save_res.get("duplicate_clinical_photos"):
+                extra_msg = f"\n⚠️ 注意：患者临床照片存在重名文件夹 ({'、'.join(save_res.get('duplicate_matches', []))})，已为您在资源管理器中同时打开临床照片母目录与归档目标目录，请手动筛选复制照片！"
+                try:
+                    subprocess.Popen(f'explorer "{os.path.normpath(save_res["clinical_root"])}"')
+                    for td in save_res.get("target_dirs", []):
+                        subprocess.Popen(f'explorer "{os.path.normpath(td)}"')
+                except Exception:
+                    pass
 
             self.send_json({
                 "success": True,
-                "message": f"报告制作完成并已输出！文件: {os.path.basename(final_report_path)}",
+                "message": f"报告制作完成并已输出！文件: {os.path.basename(final_report_path)}{extra_msg}",
                 "final_report_path": final_report_path,
-                "patient": updated_p
+                "patient": updated_p,
+                "duplicate_clinical_photos": save_res.get("duplicate_clinical_photos", False)
             })
             return
 
@@ -738,12 +788,23 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             mark_patient_archived(db_path, p_no, arch_res["archive_dir"])
             updated_p = get_patient(db_path, p_no)
 
+            extra_msg = ""
+            if arch_res.get("duplicate_clinical_photos"):
+                extra_msg = f"\n⚠️ 注意：患者临床照片存在重名文件夹 ({'、'.join(arch_res.get('duplicate_matches', []))})，已为您在资源管理器中同时打开临床照片母目录与归档目标目录，请手动筛选复制照片！"
+                try:
+                    subprocess.Popen(f'explorer "{os.path.normpath(arch_res["clinical_root"])}"')
+                    for td in arch_res.get("target_dirs", []):
+                        subprocess.Popen(f'explorer "{os.path.normpath(td)}"')
+                except Exception:
+                    pass
+
             self.send_json({
                 "success": True,
-                "message": f"患者 [{patient['name']}] 档案已成功打包归档！",
+                "message": f"患者 [{patient['name']}] 报告已成功归档入【已归档报告】！{extra_msg}",
                 "archive_dir": arch_res["archive_dir"],
                 "special_paths": arch_res.get("special_paths", []),
-                "patient": updated_p
+                "patient": updated_p,
+                "duplicate_clinical_photos": arch_res.get("duplicate_clinical_photos", False)
             })
             return
 
@@ -797,17 +858,28 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "review_doctor": rev_doc
             })
 
-            # Overwrite across 统一归档/病理报告输出, 按患者归档, 特殊患者归档
+            # Overwrite across 未归档报告/病理报告输出, 已归档报告, 特殊患者归档
             sync_res = sync_review_overwrites(work_dir, patient, final_report_path)
             updated_p = get_patient(db_path, p_no)
-            save_special_draft_queue(work_dir, updated_p, final_report_path)
+            save_res = save_special_draft_queue(work_dir, updated_p, final_report_path)
+
+            extra_msg = ""
+            if save_res.get("duplicate_clinical_photos"):
+                extra_msg = f"\n⚠️ 注意：患者临床照片存在重名文件夹 ({'、'.join(save_res.get('duplicate_matches', []))})，已为您在资源管理器中同时打开临床照片母目录与归档目标目录，请手动筛选复制照片！"
+                try:
+                    subprocess.Popen(f'explorer "{os.path.normpath(save_res["clinical_root"])}"')
+                    for td in save_res.get("target_dirs", []):
+                        subprocess.Popen(f'explorer "{os.path.normpath(td)}"')
+                except Exception:
+                    pass
 
             self.send_json({
                 "success": True,
-                "message": "审核内容已保存并同步覆盖各归档目录！",
+                "message": f"审核内容已保存并同步更新！{extra_msg}",
                 "overwritten": sync_res.get("overwritten", []),
                 "final_report_path": final_report_path,
-                "patient": updated_p
+                "patient": updated_p,
+                "duplicate_clinical_photos": save_res.get("duplicate_clinical_photos", False)
             })
             return
 
@@ -898,8 +970,9 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             # Attempt silent hardware printing of Page 1
             print_ok = False
             try:
-                cmd = f'powershell -NoProfile -Command "$w = New-Object -ComObject Word.Application; $w.Visible = $false; try {{ $d = $w.Documents.Open(\'{os.path.normpath(final_report_path)}\'); $d.PrintOut([ref]$false, [ref]$false, [ref]4, [ref]$null, [ref]\'1\', [ref]\'1\'); $d.Close([ref]$false); }} finally {{ $w.Quit(); }}"'
-                res = subprocess.run(cmd, shell=True, capture_output=True, timeout=8)
+                norm_doc = os.path.normpath(final_report_path).replace("'", "''")
+                cmd = f'powershell -NoProfile -Command "$w = New-Object -ComObject Word.Application; $w.Visible = $false; $w.DisplayAlerts = 0; try {{ $d = $w.Documents.Open(\'{norm_doc}\'); $d.PrintOut([ref]$false, [ref]$false, [ref]4, [ref]$null, [ref]\'1\', [ref]\'1\'); $d.Close([ref]$false); }} finally {{ $w.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null; }}"'
+                res = subprocess.run(cmd, shell=True, capture_output=True, timeout=12)
                 print_ok = (res.returncode == 0)
             except Exception:
                 print_ok = False
@@ -985,21 +1058,25 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
                 return
 
-            arch_dir = find_patient_archive_dir(work_dir, p_no, patient["name"])
-            if arch_dir and os.path.exists(arch_dir):
-                subprocess.Popen(["explorer.exe", os.path.normpath(arch_dir)])
+            arch_path = find_patient_archive_path(work_dir, p_no, patient["name"])
+            if arch_path and os.path.exists(arch_path):
+                norm = os.path.normpath(arch_path)
+                if os.path.isfile(norm):
+                    subprocess.Popen(f'explorer /select,"{norm}"')
+                else:
+                    subprocess.Popen(f'explorer "{norm}"')
                 self.send_json({
                     "success": True,
-                    "message": f"已在资源管理器中打开归档目录: {os.path.basename(arch_dir)}",
-                    "path": arch_dir
+                    "message": f"已在资源管理器中定位归档: {os.path.basename(norm)}",
+                    "path": norm
                 })
             else:
-                fallback = os.path.join(work_dir, "按患者归档")
+                fallback = get_archive_root_dir(work_dir)
                 os.makedirs(fallback, exist_ok=True)
                 subprocess.Popen(["explorer.exe", os.path.normpath(fallback)])
                 self.send_json({
                     "success": True,
-                    "message": "该患者归档目录尚未生成，已打开“按患者归档”根目录",
+                    "message": "该患者归档文件尚未生成，已打开“已归档报告”根目录",
                     "path": fallback
                 })
             return
@@ -1024,9 +1101,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                     word_p = get_final_report_path(work_dir, p_no, patient["name"], diag)
 
                 if word_p and os.path.exists(word_p):
-                    cmd = f'powershell -NoProfile -Command "$w = New-Object -ComObject Word.Application; $w.Visible = $false; try {{ $d = $w.Documents.Open(\'{os.path.normpath(word_p)}\'); $d.PrintOut([ref]$false, [ref]$false, [ref]4, [ref]$null, [ref]\'1\', [ref]\'1\'); $d.Close([ref]$false); }} finally {{ $w.Quit(); }}"'
+                    norm_doc = os.path.normpath(word_p).replace("'", "''")
+                    cmd = f'powershell -NoProfile -Command "$w = New-Object -ComObject Word.Application; $w.Visible = $false; $w.DisplayAlerts = 0; try {{ $d = $w.Documents.Open(\'{norm_doc}\'); $d.PrintOut([ref]$false, [ref]$false, [ref]4, [ref]$null, [ref]\'1\', [ref]\'1\'); $d.Close([ref]$false); }} finally {{ $w.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null; }}"'
                     try:
-                        res = subprocess.run(cmd, shell=True, capture_output=True, timeout=10)
+                        res = subprocess.run(cmd, shell=True, capture_output=True, timeout=12)
                         if res.returncode == 0:
                             printed_list.append(p_no)
                         else:
@@ -1097,9 +1175,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             f_path = body.get("file_path", "").strip()
             direct_printed = False
             if f_path and os.path.exists(f_path):
-                cmd = f'powershell -NoProfile -Command "$xl = New-Object -ComObject Excel.Application; $xl.Visible = $false; try {{ $wb = $xl.Workbooks.Open(\'{os.path.normpath(f_path)}\'); $wb.ActiveSheet.PrintOut(); $wb.Close($false); }} finally {{ $xl.Quit(); }}"'
+                norm_p = os.path.normpath(f_path).replace("'", "''")
+                cmd = f'powershell -NoProfile -Command "$xl = New-Object -ComObject Excel.Application; $xl.Visible = $false; $xl.DisplayAlerts = $false; try {{ $wb = $xl.Workbooks.Open(\'{norm_p}\'); $wb.ActiveSheet.PrintOut(); $wb.Close($false); }} finally {{ $xl.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($xl) | Out-Null; }}"'
                 try:
-                    res = subprocess.run(cmd, shell=True, capture_output=True, timeout=10)
+                    res = subprocess.run(cmd, shell=True, capture_output=True, timeout=12)
                     direct_printed = (res.returncode == 0)
                 except Exception:
                     direct_printed = False
@@ -1109,6 +1188,16 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "direct_printed": direct_printed,
                 "message": "签名单已发送至默认打印机！" if direct_printed else "已调起打印窗口"
             })
+            return
+
+        # 20. Exit System
+        if path == "/api/system/exit":
+            self.send_json({"success": True, "message": "系统正在安全退出..."})
+            def _delayed_exit():
+                import time
+                time.sleep(0.5)
+                os._exit(0)
+            threading.Thread(target=_delayed_exit, daemon=True).start()
             return
 
         self.send_error_json("未知的POST API接口", status=404)

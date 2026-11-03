@@ -94,7 +94,27 @@ def build_package():
     if os.path.exists(os.path.join(BASE_DIR, "报告领取签名单示例.xlsx")):
         shutil.copy2(os.path.join(BASE_DIR, "报告领取签名单示例.xlsx"), os.path.join(PACKAGE_DIR, "报告领取签名单示例.xlsx"))
     shutil.copytree(os.path.join(BASE_DIR, "工作目录"), os.path.join(PACKAGE_DIR, "工作目录"), dirs_exist_ok=True)
+    if os.path.exists(os.path.join(BASE_DIR, "文档")):
+        shutil.copytree(os.path.join(BASE_DIR, "文档"), os.path.join(PACKAGE_DIR, "文档"), dirs_exist_ok=True)
+        print("  -> 复制文档目录至安装包根目录")
+
+    # 清理工作目录下可能存在的文档目录及已归档报告示例文档
+    pkg_work_doc = os.path.join(PACKAGE_DIR, "工作目录", "文档")
+    if os.path.exists(pkg_work_doc):
+        shutil.rmtree(pkg_work_doc, ignore_errors=True)
+    pkg_archived = os.path.join(PACKAGE_DIR, "工作目录", "已归档报告")
+    if os.path.exists(pkg_archived):
+        for f in os.listdir(pkg_archived):
+            f_path = os.path.join(pkg_archived, f)
+            if os.path.isfile(f_path):
+                try:
+                    os.remove(f_path)
+                except Exception:
+                    pass
+
     shutil.copy2(os.path.join(BASE_DIR, "main.py"), os.path.join(PACKAGE_DIR, "main.py"))
+    if os.path.exists(os.path.join(BASE_DIR, "README.md")):
+        shutil.copy2(os.path.join(BASE_DIR, "README.md"), os.path.join(PACKAGE_DIR, "README.md"))
 
     # 4. Generate Launcher Scripts in Package Root
     # Batch Launcher
@@ -116,6 +136,27 @@ if %errorlevel% neq 0 (
 """
     with open(os.path.join(PACKAGE_DIR, "启动系统.bat"), "w", encoding="utf-8") as f:
         f.write(bat_content)
+
+    # Stop System Batch
+    stop_bat_content = """@echo off
+chcp 65001 >nul
+title 停止皮肤病理报告系统
+echo ======================================================
+echo           正在安全退出皮肤病理报告系统...
+echo ======================================================
+echo.
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8765"') do (
+    if not "%%a"=="0" (
+        taskkill /f /pid %%a >nul 2>nul
+        echo 已成功终止占用 8765 端口的服务进程 (PID: %%a)
+    )
+)
+echo.
+echo 系统服务已安全停止！
+timeout /t 2 >nul
+"""
+    with open(os.path.join(PACKAGE_DIR, "停止系统.bat"), "w", encoding="utf-8") as f:
+        f.write(stop_bat_content)
 
     # VBS Silent Launcher (No black CMD box)
     vbs_content = """Set ws = CreateObject("Wscript.Shell")
@@ -145,11 +186,15 @@ ws.run "runtime\\pythonw.exe main.py", 0
 
 【数据与模板】
 - 模板文件存放在：.\\模板 目录（支持1图、2图、3图及以上模板）；
-- 患者数据、Word报告、病理照片均保存在设定好的【工作目录】中；
-- 数据库位于：.\\工作目录\\数据库\\pathology.db。
+- 文字模板存放在：.\\文字模板 目录（内置249篇皮肤病理专业诊断词库）；
+- 文档手册存放在：.\\文档 目录（系统全景架构手册与操作指南）；
+- 归档报告存放于：.\\工作目录\\已归档报告\\ 目录（平铺直存，无子文件夹，零冗余防膨胀）；
+- 未归档工作区：.\\工作目录\\未归档报告\\ 目录（包含录入草稿、病理照片、输出初稿、临床照片）；
+- 疑难/质控档案存放于：.\\工作目录\\特殊患者归档\\ 目录（待审核/免疫组化/完成审核）；
+- 数据库位于：.\\工作目录\\数据库\\pathology.db（支持高并发WAL模式与安全回收站软删除）。
 
 【关闭系统】
-在命令行窗口中按 Ctrl+C，或直接关闭命令行窗口即可安全退出。
+在命令行窗口中按 Ctrl+C，或直接双击运行【停止系统.bat】即可安全退出。
 """
     with open(os.path.join(PACKAGE_DIR, "使用说明.txt"), "w", encoding="utf-8") as f:
         f.write(readme_content)

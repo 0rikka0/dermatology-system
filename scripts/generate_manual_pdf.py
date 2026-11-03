@@ -447,20 +447,20 @@ def build_manual_pdf(pdf_path):
     story.append(Paragraph("• <b>录入表单：</b> 准确填入患者姓名、性别、年龄、病理号、门诊/住院号、送检科室、送检医生、临床诊断与临床病史。", s_body))
     story.append(Paragraph("• <b>病理号前缀规范：</b> 普通门诊不带前缀（如 <code>2026110301</code>）；住院病房请选 <code>B</code>（如 <code>B2026110301</code>）；分院区选 <code>L</code>；会诊选 <code>H</code>；特殊标本选 <code>T</code>。<b>不同前缀当日自增序号独立递增，互不干扰</b>。", s_body))
     story.append(Paragraph("• <b>规划图片数与部位联动：</b> 估算该标本需要拍摄的照片数量（1至9张）。选定后，下方会自动生成相应数量的“送检部位”输入框。在生成报告时，每个部位将以 <code>1.部位名</code>、<code>2.部位名</code> 规范对齐于对应图片正下方。", s_body))
-    story.append(Paragraph("• <b>一键生成：</b> 点击【录入并生成报告】。系统自动在 <code>统一归档/病理报告录入/</code> 生成初稿 Word，并自动在 <code>统一归档/病理照片/</code> 为该患者建立专属摄片目录（<code>病理号_姓名</code>）。", s_body))
+    story.append(Paragraph("• <b>一键生成：</b> 点击【录入并生成报告】。系统自动在 <code>未归档报告/病理报告录入/</code> 生成初稿 Word，并自动在 <code>未归档报告/病理照片/</code> 为该患者建立专属摄片目录（<code>病理号_姓名</code>）。", s_body))
 
     story.append(Spacer(1, 8))
     story.append(Paragraph("步骤 2：显微镜摄片与图片存入", s_h2))
-    story.append(Paragraph("• 在显微镜摄片电脑上完成切片拍摄后，将照片直接保存或拷贝至对应患者的 <code>统一归档/病理照片/病理号_姓名/</code> 文件夹中。", s_body))
+    story.append(Paragraph("• 在显微镜摄片电脑上完成切片拍摄后，将照片直接保存或拷贝至对应患者的 <code>未归档报告/病理照片/病理号_姓名/</code> 文件夹中。", s_body))
     story.append(Paragraph("• <b>文件命名建议：</b> 推荐采用 <code>1_基底细胞癌40X.jpg</code> 或 <code>序号+诊断</code> 格式，系统将自动根据文件名中的关键词智能推荐病理描述词库。", s_body))
 
     story.append(Spacer(1, 8))
     story.append(Paragraph("步骤 3：报告制作、调图与排版 (【报告制作】工作区)", s_h2))
     story.append(Paragraph("• <b>进入编辑：</b> 点击左侧工作列表中的患者卡片（默认列出今日患者，可自由切换日期查询）。", s_body))
-    story.append(Paragraph("• <b>临床照片快速调阅：</b> 界面设有【临床照片查询】按钮。点击后，系统自动在 <code>统一归档/临床照片/</code> 检索该患者姓名的皮损大体照片文件夹，若存在则直接唤起资源管理器打开，便于对照临床表现。", s_body))
+    story.append(Paragraph("• <b>临床照片快速调阅：</b> 界面设有【临床照片查询】按钮。点击后，系统自动在 <code>未归档报告/临床照片/</code> 检索该患者姓名的皮损大体照片文件夹，若存在则直接唤起资源管理器打开，便于对照临床表现。", s_body))
     story.append(Paragraph("• <b>图片点选装配：</b> 界面以清晰缩略图展示已摄照片，支持一键点选替换 Word 模板中的预留占位框。如拍摄张数少于预设位，排版引擎会自动剥离多余空白框，无需担心出现黑色空白矩形。", s_body))
     story.append(Paragraph("• <b>诊断词库智能推荐：</b> 右侧词库栏自动关联推荐常见病描述（如皮脂腺痣、脂溢性角化、银屑病等），点击【一键填入】即可将标准镜下描述与诊断直接填入文本框。", s_body))
-    story.append(Paragraph("• <b>智能排版保存：</b> 点击【保存报告】。系统自动按行距15磅和图片规格重算行高补偿，确保<b>第一页完整收尾于医生签名栏</b>，并存入 <code>统一归档/病理报告输出/</code>。", s_body))
+    story.append(Paragraph("• <b>智能排版保存：</b> 点击【保存报告】。系统自动按行距15磅和图片规格重算行高补偿，确保<b>第一页完整收尾于医生签名栏</b>，并存入 <code>未归档报告/病理报告输出/</code>。", s_body))
 
     story.append(Spacer(1, 10))
 
@@ -551,7 +551,7 @@ def build_manual_pdf(pdf_path):
 
     faq_items = [
         ("Q1：点击“临床照片查询”时提示找不到文件夹？",
-         "答：系统默认根据“患者姓名”在 <code>统一归档/临床照片/</code> 下查找同名子文件夹。如果临床摄片人员尚未将照片导入，或文件夹名称含有错别字，系统会自动打开临床照片总目录，您可以手动检索或将大体照片放入该目录即可。"),
+         "答：系统默认根据“患者姓名”在 <code>未归档报告/临床照片/</code> 下查找同名子文件夹。如果临床摄片人员尚未将照片导入，或文件夹名称含有错别字，系统会自动打开临床照片总目录，您可以手动检索或将大体照片放入该目录即可。"),
 
         ("Q2：为什么在报告制作台点击“归档”按钮弹出了红色警告？",
          "答：这是系统的质控保护机制。该病例勾选了“待审核”或“免疫组化”，属于特殊疑难病例，必须由审核医生在【报告审核】工作区完成复核并点击“审核通过并归档”，普通制作界面禁止越权直接归档。"),
@@ -579,7 +579,7 @@ def build_manual_pdf(pdf_path):
         [
             Paragraph("<b>编制单位：</b> 皮肤病理系统研发团队<br/><b>技术支持：</b> 本地离线部署支持组", s_table_text),
             Paragraph("<b>培训脱敏声明：</b><br/>本文档内所载人名（张医生、李主任、张建国等）及编号均为模拟教学数据，无任何真实个人或机构隐私信息。", s_table_text),
-            Paragraph("<b>版本标识：</b> v1.2.0-Release<br/><b>文档归档：</b> <code>工作目录/文档/</code>", s_table_text)
+            Paragraph("<b>版本标识：</b> v1.2.0-Release<br/><b>文档归档：</b> <code>文档/</code>", s_table_text)
         ]
     ]
     ft_table = Table(footer_table_data, colWidths=[150, 210, 127])
@@ -608,5 +608,5 @@ def build_manual_pdf(pdf_path):
         print(f"清理临时图片提示: {e}")
 
 if __name__ == "__main__":
-    target_pdf = r"D:\AIagent\project\dermatology-system\工作目录\文档\皮肤病理报告系统_快速入门操作手册.pdf"
+    target_pdf = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "文档", "皮肤病理报告系统_快速入门操作手册.pdf")
     build_manual_pdf(target_pdf)

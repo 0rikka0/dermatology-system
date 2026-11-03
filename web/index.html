@@ -366,7 +366,7 @@
                 <div class="editor-section-header">
                   <div class="section-title">
                     <span>🖼️ 显微镜照片选择与预留位排版</span>
-                    <span class="sub-hint">(自动读取“统一归档\病理照片\病理号_姓名”目录，文件名为“序号+诊断”)</span>
+                    <span class="sub-hint">(自动读取“未归档报告\病理照片\病理号_姓名”目录，文件名为“序号+诊断”)</span>
                   </div>
                   <div style="display: flex; gap: 8px;">
                     <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-refresh-photos">🔄 重新读取照片</button>
@@ -521,7 +521,7 @@
             <div style="font-size: 48px; margin-bottom: 12px;">⚖️</div>
             <div style="font-size: 16px; font-weight: 600; color: #475569;">请从左侧列表选择待审核或免疫组化患者</div>
             <p style="color: var(--text-muted); font-size: 13px; margin-top: 6px;">
-              审核页面可修改报告医生与审核医生姓名，保存后自动同步覆盖“病理报告输出”、“按患者归档”与“特殊患者归档”。
+              审核页面可修改报告医生与审核医生姓名，保存后自动同步覆盖“病理报告输出”、“已归档报告”与“特殊患者归档”。
             </p>
           </div>
 
@@ -648,7 +648,7 @@
     <div id="tab-output" class="workspace-panel">
       <!-- Top notice -->
       <div class="output-top-notice">
-        <span>ℹ️ <strong>报告输出工作区</strong>：本区域仅供已归档报告的集中查阅与打印，文件读取自“统一归档\病理报告输出”及“按患者归档”，不涉及内容编辑。</span>
+        <span>ℹ️ <strong>报告输出工作区</strong>：本区域仅供已归档报告的集中查阅与打印，文件读取自“未归档报告\病理报告输出”及“已归档报告”，不涉及内容编辑。</span>
       </div>
 
       <div class="output-grid">
@@ -1006,7 +1006,7 @@
                 <label class="form-label" for="setting-work-dir">工作目录路径</label>
                 <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\AIagent\project\dermatology-system\工作目录">
                 <small style="color: var(--text-muted); margin-top: 4px;">
-                  系统将按照“统一归档”、“按患者归类”、“报告输出”、“特殊患者归档”、“数据库”标准结构自动维护文件。
+                  系统将按照“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”、“领取表”标准结构自动维护文件。
                 </small>
               </div>
             </div>
@@ -1047,7 +1047,7 @@
           <label class="form-label required" for="wizard-work-dir">工作目录位置</label>
           <input type="text" id="wizard-work-dir" class="form-control" value="D:\AIagent\project\dermatology-system\工作目录" required>
           <small style="color: var(--text-muted); margin-top: 4px;">
-            系统将自动在此目录下建立“统一归档”、“数据库”、“报告输出”等标准文件夹。
+            系统将自动在此目录下建立“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”等标准文件夹。
           </small>
         </div>
 
@@ -1180,7 +1180,7 @@
             <option value="2">需要重新归档 (2)</option>
           </select>
           <small style="color: var(--text-muted); margin-top: 4px; display: block;">
-            若修改为“已归档”，系统将自动触发打包归档到【按患者归档】。若修改为“未归档”，将撤销归档文件夹。
+            若修改为“已归档”，系统将自动触发归档到【已归档报告】。若修改为“未归档”，将撤销归档文件。
           </small>
         </div>
 
@@ -1207,10 +1207,10 @@
         </p>
         <ul style="padding-left: 20px; margin-bottom: 12px; color: #4b5563;">
           <li>从系统数据库中永久删除该患者所有记录及历史信息；</li>
-          <li>删除“统一归档\病理报告录入”中的草稿 Word 文件；</li>
-          <li>删除“统一归档\病理报告输出”中的最终 Word 报告；</li>
-          <li>删除“统一归档\病理照片”中该患者的照片文件夹及内部所有图片；</li>
-          <li>删除“按患者归档”与“特殊患者归档”中所有已归档的副本。</li>
+          <li>删除“未归档报告\病理报告录入”中的草稿 Word 文件；</li>
+          <li>删除“未归档报告\病理报告输出”中的最终 Word 报告；</li>
+          <li>删除“未归档报告\病理照片”中该患者的照片文件夹及内部所有图片；</li>
+          <li>删除“已归档报告”与“特殊患者归档”中所有已归档的副本。</li>
         </ul>
         <p style="font-size: 12px; color: var(--text-muted);">
           请确认是否继续删除？
@@ -1221,6 +1221,35 @@
         <button type="button" class="btn btn-danger" id="btn-confirm-delete-modal" style="background: #dc2626; color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: 600; cursor: pointer;">
           🗑️ 确认彻底删除
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 免责声明弹窗 (每次打开软件启动WebUI时弹出显示) -->
+  <div id="disclaimer-modal" class="wizard-overlay" style="display: flex; z-index: 99999; background: rgba(15, 23, 42, 0.75); backdrop-filter: blur(4px);">
+    <div class="wizard-dialog" style="max-width: 560px; border-top: 4px solid #0284c7; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+      <div class="wizard-header" style="padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
+        <div class="wizard-title" style="font-size: 18px; font-weight: 700; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+          <span>⚖️ 软件使用免责声明与风险提示</span>
+        </div>
+      </div>
+      <div style="padding: 20px 0; font-size: 14px; line-height: 1.8; color: #334155;">
+        <p style="margin-bottom: 12px; font-weight: 600; color: #b91c1c;">
+          软件输出（含病理报告）仅供参考，须由执业医师独立复核。
+        </p>
+        <p style="margin-bottom: 12px;">
+          因使用本软件造成的输入错误、文件及数据丢失或泄露、病理报告纠纷等一切后果，均与软件开发者无关，由使用者自行承担。
+        </p>
+        <p style="margin-bottom: 12px;">
+          请勿录入未经合规评估的真实患者信息，并自行做好数据备份。
+        </p>
+        <p style="margin-bottom: 0; font-size: 13px; color: #64748b; border-top: 1px dashed #cbd5e1; padding-top: 12px;">
+          点击“我已知晓并同意”或继续使用，即表示您已阅读并接受上述风险。
+        </p>
+      </div>
+      <div class="form-actions" style="display: flex; justify-content: flex-end; gap: 12px; padding-top: 14px; border-top: 1px solid #e2e8f0;">
+        <button type="button" class="btn btn-secondary" id="btn-disclaimer-exit" style="padding: 8px 20px; font-weight: 500; min-width: 80px;">退出</button>
+        <button type="button" class="btn btn-primary" id="btn-disclaimer-agree" style="padding: 8px 24px; font-weight: 600; min-width: 140px;">我已知晓并同意</button>
       </div>
     </div>
   </div>
