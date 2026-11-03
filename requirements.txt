@@ -1,0 +1,7 @@
+# 皮肤病理报告系统 - 依赖环境列表
+# Python >= 3.8
+
+python-docx>=1.1.0
+openpyxl>=3.1.2
+reportlab>=4.0.0
+Pillow>=10.0.0

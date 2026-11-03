@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>皮肤病理报告系统</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Header & Navbar -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand">
+        <div class="brand-icon">🔬</div>
+        <div>
+          <div class="brand-title">皮肤病理报告系统</div>
+          <div class="brand-subtitle">Dermatology Pathology Reporting System</div>
+        </div>
+      </div>
+
+      <nav class="nav-tabs">
+        <button class="nav-tab-btn active" data-tab="tab-entry">
+          <span>📝</span> 患者信息录入
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-making">
+          <span>🔬</span> 报告制作
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-review">
+          <span>⚖️</span> 报告审核
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-output">
+          <span>🖨️</span> 报告输出
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-signing">
+          <span>📋</span> 报告签名单
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-search">
+          <span>🔍</span> 病历综合查询
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-settings">
+          <span>⚙️</span> 系统设置
+        </button>
+      </nav>
+
+      <div class="header-meta">
+        <div class="status-pill success" id="status-dir-pill" title="工作目录">
+          <span>📁</span>
+          <span id="current-workdir-display">工作目录未设定</span>
+        </div>
+        <div class="status-pill" id="status-doctors-pill" title="当前医生">
+          <span>👨‍⚕️</span>
+          <span id="current-doctors-display">张医生 / 李主任</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Areas -->
+  <main class="main-content">
+    
+    <!-- 1. ENTRY WORKSPACE (录入工作区) -->
+    <div id="tab-entry" class="workspace-panel active">
+      <div class="entry-grid">
+        
+        <!-- Left: Patient Entry Form -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <span id="form-mode-title">📝 患者信息录入</span>
+            </div>
+            <div id="edit-cancel-btn-box" style="display: none;">
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-cancel-edit">退出编辑模式</button>
+            </div>
+          </div>
+          
+          <div class="card-body">
+            <form id="patient-form">
+              <input type="hidden" id="edit-old-pathology-no" value="">
+
+              <!-- Section 1: 病理号智能生成与提取 -->
+              <div class="form-section">
+                <div class="section-label">🔢 1. 病理号信息与提取 (送检日期自动解析)</div>
+                <div class="pathology-builder">
+                  <div class="pathology-inputs">
+                    <div class="form-group" style="width: 130px;">
+                      <label class="form-label">前缀分类</label>
+                      <select id="pathology-prefix" class="form-control">
+                        <option value="">普通/门诊 (无)</option>
+                        <option value="B">B - 病房</option>
+                        <option value="L">L - 陆港院区</option>
+                        <option value="H">H - 会诊</option>
+                        <option value="T">T - 特殊</option>
+                      </select>
+                    </div>
+
+                    <div class="form-group" style="width: 140px;">
+                      <label class="form-label">送检日期</label>
+                      <input type="date" id="pathology-date" class="form-control">
+                    </div>
+
+                    <div class="form-group" style="flex: 1; min-width: 170px;">
+                      <label class="form-label required">病理号 (主键)</label>
+                      <div style="display: flex; gap: 6px;">
+                        <input type="text" id="pathology-no" class="form-control" placeholder="如 2026101501" required>
+                        <button type="button" class="btn btn-secondary btn-sm" id="btn-auto-next-no" title="获取该分类今日下一个可用序号">
+                          ⚡ 自动编号
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="pathology-feedback" id="pathology-feedback">
+                    <span id="pathology-parsed-info" class="feedback-ok"></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 2: 患者基本信息 -->
+              <div class="form-section">
+                <div class="section-label">👤 2. 患者基本信息</div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label class="form-label required" for="patient-name">姓名</label>
+                    <input type="text" id="patient-name" class="form-control" placeholder="患者姓名" required>
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label required" for="patient-gender">性别</label>
+                    <select id="patient-gender" class="form-control" required>
+                      <option value="女">女</option>
+                      <option value="男">男</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label required" for="patient-age">年龄</label>
+                    <input type="text" id="patient-age" class="form-control" placeholder="如 45" required>
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label" for="patient-ref-doc">送检医生</label>
+                    <input type="text" id="patient-ref-doc" class="form-control" placeholder="送检医生姓名">
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label class="form-label" for="patient-inpatient-no">住院号</label>
+                    <input type="text" id="patient-inpatient-no" class="form-control" placeholder="住院号 (选填)">
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label" for="patient-outpatient-no">门诊号</label>
+                    <input type="text" id="patient-outpatient-no" class="form-control" placeholder="门诊号 (选填)">
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label">送检单位</label>
+                    <input type="text" class="form-control" value="本院" readonly>
+                  </div>
+
+                  <div class="form-group">
+                    <label class="form-label">送检科室</label>
+                    <input type="text" class="form-control" value="皮肤科" readonly>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 3: 临床与送检部位 -->
+              <div class="form-section">
+                <div class="section-label">📋 3. 临床诊断与送检部位</div>
+                
+                <div class="form-group" style="margin-bottom: 12px;">
+                  <label class="form-label" for="patient-diag">临床诊断</label>
+                  <input type="text" id="patient-diag" class="form-control" placeholder="如：脂溢性角化病、银屑病等">
+                </div>
+
+                <div class="form-group" style="margin-bottom: 12px;">
+                  <label class="form-label">图片数 (1-9 张)</label>
+                  <div class="image-count-buttons" id="image-count-btn-group">
+                    <button type="button" class="count-btn active" data-count="1">1</button>
+                    <button type="button" class="count-btn" data-count="2">2</button>
+                    <button type="button" class="count-btn" data-count="3">3</button>
+                    <button type="button" class="count-btn" data-count="4">4</button>
+                    <button type="button" class="count-btn" data-count="5">5</button>
+                    <button type="button" class="count-btn" data-count="6">6</button>
+                    <button type="button" class="count-btn" data-count="7">7</button>
+                    <button type="button" class="count-btn" data-count="8">8</button>
+                    <button type="button" class="count-btn" data-count="9">9</button>
+                  </div>
+                  <input type="hidden" id="patient-image-count" value="1">
+                </div>
+
+                <!-- Dynamic Biopsy Sites Input Container -->
+                <div class="form-group">
+                  <label class="form-label" id="biopsy-sites-title">送检部位</label>
+                  <div id="dynamic-sites-wrapper">
+                    <!-- Javascript generates inputs here -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 4: 病史资料 -->
+              <div class="form-section">
+                <div class="section-label">📜 4. 病史资料</div>
+                <div class="form-group">
+                  <textarea id="patient-history" class="form-control" rows="3" placeholder="填写患者现病史、既往史、皮疹发生发展特点等..."></textarea>
+                </div>
+              </div>
+
+              <!-- Form Submit Actions -->
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="btn-submit-patient">
+                  <span>💾</span>
+                  <span id="btn-submit-text">保存并生成病理报告</span>
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-reset-form">
+                  <span>🔄</span> 清空重置
+                </button>
+              </div>
+
+            </form>
+          </div>
+        </div>
+
+        <!-- Right: Today's Patient List & Quick Preview/Actions -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <span>📅 今日已录入患者</span>
+              <span class="status-pill" id="today-count-badge">0 人</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-today">
+              🔄 刷新
+            </button>
+          </div>
+
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column;">
+            <!-- Scrollable list of patients -->
+            <div class="patient-list-container" id="today-patient-list">
+              <div class="patient-list-empty">正在加载今日数据...</div>
+            </div>
+
+            <!-- Detail & Action Bar for Selected Patient -->
+            <div id="selected-patient-box" style="display: none; margin-top: 14px;">
+              <div class="selected-patient-actions">
+                <div style="font-weight: 600; color: #1e293b; display: flex; justify-content: space-between;">
+                  <span id="selected-patient-title">选中患者</span>
+                  <span id="selected-patient-diag-badge" style="color: var(--primary); font-size: 13px;"></span>
+                </div>
+
+                <!-- Path display & Copy buttons -->
+                <div class="quick-path-box">
+                  <div class="path-text" id="selected-word-path" title="Word报告文件路径">报告: -</div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-copy-word-path">📋 复制路径</button>
+                </div>
+
+                <div class="quick-path-box">
+                  <div class="path-text" id="selected-photo-path" title="病理照片文件夹路径">照片: -</div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-copy-photo-path">📋 复制路径</button>
+                </div>
+
+                <!-- Operations -->
+                <div class="actions-button-row">
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-preview-selected">
+                    👁️ 预览Word报告
+                  </button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-open-word-file">
+                    📄 在Word中打开
+                  </button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-open-photo-dir">
+                    📂 打开照片文件夹
+                  </button>
+                  <button type="button" class="btn btn-success btn-sm" id="btn-edit-selected">
+                    ✏️ 修改患者信息
+                  </button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 2. REPORT MAKING WORKSPACE (报告制作工作区) -->
+    <div id="tab-making" class="workspace-panel">
+      <div class="making-grid">
+
+        <!-- Left: Patient Selector & Filters -->
+        <div class="card making-sidebar">
+          <div class="card-header">
+            <div class="card-title">
+              <span>📋 报告制作列表</span>
+              <span class="status-pill" id="making-count-badge">0 人</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-making">
+              🔄 刷新
+            </button>
+          </div>
+
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+            <!-- Filter by date and keyword -->
+            <div class="making-filter-box">
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 60px;">报告日期</label>
+                <input type="date" id="making-filter-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-making-today" style="white-space: nowrap; padding: 4px 8px;">今日</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-making-all-dates" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <input type="text" id="making-filter-keyword" class="form-control" placeholder="按姓名/病理号搜索..." style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-primary btn-sm" id="btn-making-search" style="padding: 4px 10px;">🔍</button>
+              </div>
+            </div>
+
+            <!-- Scrollable list of patients -->
+            <div class="patient-list-container" id="making-patient-list" style="flex: 1; max-height: calc(100vh - 280px);">
+              <div class="patient-list-empty">正在加载报告列表...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Report Editor -->
+        <div class="card making-editor-card" id="making-editor-container">
+          <!-- Shown when no patient is selected -->
+          <div id="making-empty-hint" class="making-empty-state">
+            <div style="font-size: 48px; margin-bottom: 12px;">🔬</div>
+            <div style="font-size: 16px; font-weight: 600; color: #475569;">请从左侧列表选择一份患者报告进入制作</div>
+            <p style="color: var(--text-muted); font-size: 13px; margin-top: 6px;">
+              系统将自动读取病理照片文件夹中的显微镜照片、智能推荐文字模板并生成规范病理诊断。
+            </p>
+          </div>
+
+          <!-- Shown when patient is active -->
+          <div id="making-editor-panel" style="display: none; height: 100%; display: flex; flex-direction: column;">
+            
+            <!-- Patient Banner & Action Buttons -->
+            <div class="making-banner">
+              <div class="making-banner-info">
+                <span class="patient-title-badge" id="mk-badge-name">姓名</span>
+                <span class="banner-tag" id="mk-badge-no">病理号</span>
+                <span class="banner-sub" id="mk-badge-info">女 · 45岁</span>
+                <span class="banner-diag" id="mk-badge-diag">临床诊断: 脂溢性角化病</span>
+              </div>
+              <div class="making-banner-actions">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-find-clinical">
+                  📷 临床照片查询
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-open-photo-dir">
+                  📂 病理照片目录
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-open-word-file">
+                  📄 原Word文件
+                </button>
+              </div>
+            </div>
+
+            <!-- Scrollable Editing Body -->
+            <div class="making-scroll-body">
+              
+              <!-- Section 1: 显微镜采图与图片预留位排版 -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🖼️ 显微镜照片选择与预留位排版</span>
+                    <span class="sub-hint">(自动读取“统一归档\病理照片\病理号_姓名”目录，文件名为“序号+诊断”)</span>
+                  </div>
+                  <div style="display: flex; gap: 8px;">
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-refresh-photos">🔄 重新读取照片</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-add-slot">➕ 增加图片预留位</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-auto-layout">📐 一键自动排版</button>
+                  </div>
+                </div>
+
+                <!-- Available microscope photos strip -->
+                <div class="available-photos-strip">
+                  <div class="strip-label">已读入显微镜图片库 (<span id="mk-avail-photos-count">0</span> 张)：</div>
+                  <div class="photos-horizontal-scroll" id="mk-available-photos-list">
+                    <div class="photo-strip-empty">该患者文件夹下暂无显微镜图片</div>
+                  </div>
+                </div>
+
+                <!-- Report Image Slots Grid -->
+                <div class="slots-container">
+                  <div class="slots-header">
+                    <span style="font-weight: 600;">报告内图片排版插槽 (对应Word排版位置)：</span>
+                    <span style="font-size: 12px; color: var(--text-muted);" id="mk-slots-status-desc">当前共 1 个插槽</span>
+                  </div>
+                  <div class="slots-grid" id="mk-slots-grid">
+                    <!-- Dynamic slots generated by JS -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 2: 镜下描述与文字模板库 -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🔬 镜下描述</span>
+                  </div>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-open-template-modal">
+                    📖 浏览文字模板库 (249篇)
+                  </button>
+                </div>
+
+                <!-- Recommended templates chips based on photo diagnoses -->
+                <div class="recommend-box" id="mk-recommend-container" style="display: none;">
+                  <span class="recommend-label">💡 智能推荐模板 (根据图片诊断)：</span>
+                  <div class="recommend-chips" id="mk-recommend-chips"></div>
+                </div>
+
+                <div class="form-group" style="margin-top: 8px;">
+                  <textarea id="mk-microscopic-desc" class="form-control" rows="5" placeholder="在此录入镜下描述，或从模板库、推荐栏中一键导入..."></textarea>
+                </div>
+              </div>
+
+              <!-- Section 3: 病理诊断 -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🏷️ 病理诊断</span>
+                    <span class="sub-hint">(已按“完成报告示例”自动合成，如“1.2.交界痣；3.皮内痣”)</span>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-regen-diag">
+                    ⚡ 重新按图片命名合成
+                  </button>
+                </div>
+                <div class="form-group">
+                  <input type="text" id="mk-pathology-diag" class="form-control" style="font-size: 15px; font-weight: 600;" placeholder="如：1.2.交界痣；3.皮内痣">
+                </div>
+              </div>
+
+              <!-- Section 4: 审核标记与医生 -->
+              <div class="editor-section review-flags-section">
+                <div class="review-checkboxes">
+                  <label class="custom-checkbox-label">
+                    <input type="checkbox" id="mk-is-pending-review">
+                    <span class="checkbox-text">🚩 标记为【待审核报告】</span>
+                  </label>
+                  <label class="custom-checkbox-label">
+                    <input type="checkbox" id="mk-is-needs-ihc">
+                    <span class="checkbox-text">🧪 标记为【需免疫组化报告】</span>
+                  </label>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Footer Save & Archive Action Bar -->
+            <div class="making-footer-bar">
+              <div class="footer-left">
+                <span id="mk-save-status" class="save-status-text">未保存修改</span>
+              </div>
+              <div class="footer-right">
+                <button type="button" class="btn btn-secondary" id="btn-mk-preview">
+                  👁️ 预览Word
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-mk-open-final-word">
+                  📄 在Word中打开
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-mk-open-explorer">
+                  📂 在文件管理器中打开
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-mk-print-report" style="color: #0369a1; border-color: #bae6fd; background: #f0f9ff;">
+                  🖨️ 一键打印第一页
+                </button>
+                <button type="button" class="btn btn-primary" id="btn-mk-save-report">
+                  💾 保存报告并输出 (2.7)
+                </button>
+                <button type="button" class="btn btn-success" id="btn-mk-archive-report">
+                  📦 一键归档 (2.8)
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 3. REPORT REVIEW WORKSPACE (报告审核工作区) -->
+    <div id="tab-review" class="workspace-panel">
+      <div class="making-grid">
+
+        <!-- Left: Review Patients List -->
+        <div class="card making-sidebar">
+          <div class="card-header">
+            <div class="card-title">
+              <span>⚖️ 待审核与免疫组化列表</span>
+              <span class="status-pill" id="review-count-badge">0 人</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-review">
+              🔄 刷新
+            </button>
+          </div>
+
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+            <div class="making-filter-box">
+              <label class="custom-checkbox-label" style="margin-bottom: 6px;">
+                <input type="checkbox" id="review-show-approved-toggle">
+                <span class="checkbox-text" style="font-size: 13px;">显示【完成审核】患者</span>
+              </label>
+              <input type="text" id="review-filter-keyword" class="form-control" placeholder="按姓名/病理号筛选..." style="font-size: 13px; padding: 4px 8px;">
+            </div>
+
+            <!-- Scrollable review patient list -->
+            <div class="patient-list-container" id="review-patient-list" style="flex: 1; max-height: calc(100vh - 280px);">
+              <div class="patient-list-empty">正在加载待审核数据...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Review Editor -->
+        <div class="card making-editor-card" id="review-editor-container">
+          <!-- Empty Hint -->
+          <div id="review-empty-hint" class="making-empty-state">
+            <div style="font-size: 48px; margin-bottom: 12px;">⚖️</div>
+            <div style="font-size: 16px; font-weight: 600; color: #475569;">请从左侧列表选择待审核或免疫组化患者</div>
+            <p style="color: var(--text-muted); font-size: 13px; margin-top: 6px;">
+              审核页面可修改报告医生与审核医生姓名，保存后自动同步覆盖“病理报告输出”、“按患者归档”与“特殊患者归档”。
+            </p>
+          </div>
+
+          <!-- Active Panel -->
+          <div id="review-editor-panel" style="display: none; height: 100%; display: flex; flex-direction: column;">
+            
+            <!-- Banner -->
+            <div class="making-banner">
+              <div class="making-banner-info">
+                <span class="patient-title-badge" id="rev-badge-name">姓名</span>
+                <span class="banner-tag" id="rev-badge-no">病理号</span>
+                <span class="banner-sub" id="rev-badge-status">状态</span>
+                <span class="banner-diag" id="rev-badge-diag">诊断</span>
+              </div>
+              <div class="making-banner-actions">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-find-clinical">
+                  📷 临床照片查询
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-open-photo-dir">
+                  📂 病理照片目录
+                </button>
+              </div>
+            </div>
+
+            <!-- Scrollable Body -->
+            <div class="making-scroll-body">
+              
+              <!-- Reviewer Doctor Override Row (Special in Review) -->
+              <div class="editor-section doc-override-section">
+                <div class="section-title">
+                  <span>👨‍⚕️ 医生签名调整 (可直接修改本次报告医生与审核医生)</span>
+                </div>
+                <div class="form-row" style="margin-top: 8px;">
+                  <div class="form-group">
+                    <label class="form-label required">报告医生</label>
+                    <input type="text" id="rev-report-doc" class="form-control" placeholder="报告医生姓名">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label required">审核医生</label>
+                    <input type="text" id="rev-review-doc" class="form-control" placeholder="审核医生姓名">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">报告日期</label>
+                    <input type="text" id="rev-report-date" class="form-control" readonly>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Photo Slots -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🖼️ 报告插图排版</span>
+                  </div>
+                  <div style="display: flex; gap: 8px;">
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-refresh-photos">🔄 重新读取照片</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-add-slot">➕ 增加图片预留位</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-auto-layout">📐 一键自动排版</button>
+                  </div>
+                </div>
+                <div class="slots-grid" id="rev-slots-grid"></div>
+              </div>
+
+              <!-- 镜下描述 -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🔬 镜下描述</span>
+                  </div>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-rev-open-template-modal">
+                    📖 浏览文字模板库
+                  </button>
+                </div>
+                <div class="form-group" style="margin-top: 8px;">
+                  <textarea id="rev-microscopic-desc" class="form-control" rows="5"></textarea>
+                </div>
+              </div>
+
+              <!-- 病理诊断 -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🏷️ 病理诊断</span>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <input type="text" id="rev-pathology-diag" class="form-control" style="font-size: 15px; font-weight: 600;">
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Footer Action Bar -->
+            <div class="making-footer-bar">
+              <div class="footer-left">
+                <span id="rev-save-status" class="save-status-text">未保存修改</span>
+              </div>
+              <div class="footer-right">
+                <button type="button" class="btn btn-secondary" id="btn-rev-preview">
+                  👁️ 预览报告
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-rev-open-word">
+                  📄 在Word中打开
+                </button>
+                <button type="button" class="btn btn-primary" id="btn-rev-save-overwrite">
+                  💾 保存修改并同步覆盖各归档 (2.9)
+                </button>
+                <button type="button" class="btn btn-success" id="btn-rev-approve">
+                  ✅ 完成审核 (2.9)
+                </button>
+                <button type="button" class="btn btn-warning" id="btn-rev-archive">
+                  📦 打包归档 (3.0)
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 4. REPORT OUTPUT WORKSPACE (报告输出工作区 - 3.1) -->
+    <div id="tab-output" class="workspace-panel">
+      <!-- Top notice -->
+      <div class="output-top-notice">
+        <span>ℹ️ <strong>报告输出工作区</strong>：本区域仅供已归档报告的集中查阅与打印，文件读取自“统一归档\病理报告输出”及“按患者归档”，不涉及内容编辑。</span>
+      </div>
+
+      <div class="output-grid">
+        <!-- List 1: 常规已归档报告 (普通报告) -->
+        <div class="card output-list-card">
+          <div class="card-header">
+            <div class="card-title">
+              <span>📋 常规已归档报告 (普通报告)</span>
+              <span class="status-pill" id="output-reg-count-badge">0 人</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-output-reg">🔄 刷新</button>
+          </div>
+
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+            <div class="output-toolbar">
+              <div class="output-filter-row">
+                <label style="font-size: 12px; color: var(--text-muted); white-space: nowrap;">病理号范围:</label>
+                <select id="output-reg-prefix-select" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                  <option value="ALL">所有范围</option>
+                  <option value="NONE">仅普通 (无前缀)</option>
+                  <option value="L">仅陆港 (L)</option>
+                  <option value="B">仅病房 (B)</option>
+                  <option value="T">仅特殊 (T)</option>
+                </select>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-output-reg-print-today" style="width: 100%; white-space: nowrap;">
+                🖨️ 一键打印今日已归档报告 (第1页)
+              </button>
+            </div>
+
+            <!-- List Container -->
+            <div class="output-patients-scroll" id="output-reg-patient-list">
+              <div class="patient-list-empty">正在加载常规已归档报告...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- List 2: 特殊审核完成报告 (待审核/免疫组化 且 完成审核) -->
+        <div class="card output-list-card">
+          <div class="card-header">
+            <div class="card-title">
+              <span>⚖️ 特殊审核完成报告 (待审/组化+完成审核)</span>
+              <span class="status-pill" id="output-spec-count-badge">0 人</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-output-spec">🔄 刷新</button>
+          </div>
+
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+            <div class="output-toolbar">
+              <div class="output-filter-row">
+                <label style="font-size: 12px; color: var(--text-muted); white-space: nowrap;">病理号范围:</label>
+                <select id="output-spec-prefix-select" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                  <option value="ALL">所有范围</option>
+                  <option value="NONE">仅普通 (无前缀)</option>
+                  <option value="L">仅陆港 (L)</option>
+                  <option value="B">仅病房 (B)</option>
+                  <option value="T">仅特殊 (T)</option>
+                </select>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-output-spec-print-today" style="width: 100%; white-space: nowrap; background: #0284c7; border-color: #0284c7;">
+                🖨️ 一键打印今日已归档报告 (第1页)
+              </button>
+            </div>
+
+            <!-- List Container -->
+            <div class="output-patients-scroll" id="output-spec-patient-list">
+              <div class="patient-list-empty">正在加载特殊审核完成报告...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. SIGNING SHEET WORKSPACE (报告领取签名单 - 3.2) -->
+    <div id="tab-signing" class="workspace-panel">
+      <!-- Filter and Range Config Card -->
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="card-header">
+          <div class="card-title">📝 生成报告领取签名单</div>
+        </div>
+        <div class="card-body" style="padding: 16px 20px;">
+          <div class="signing-form-grid">
+            
+            <!-- Date range row -->
+            <div class="signing-row">
+              <div class="signing-label">📅 报告时间范围：</div>
+              <div class="signing-inputs-group">
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="date" id="signing-start-date" class="form-control" style="width: 160px;">
+                  <span style="color: var(--text-muted);">至</span>
+                  <input type="date" id="signing-end-date" class="form-control" style="width: 160px;">
+                </div>
+                <div class="signing-quick-dates">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-today">今日</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-week">本周</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-month">本月</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-all">全部时间</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pathology Prefix checkboxes -->
+            <div class="signing-row" style="margin-top: 14px;">
+              <div class="signing-label">🏷️ 病理号前缀范围：</div>
+              <div class="signing-prefixes-group">
+                <label class="custom-checkbox-label">
+                  <input type="checkbox" id="pfx-chk-all" checked>
+                  <span class="checkbox-text" style="font-weight: 600;">所有范围</span>
+                </label>
+                <label class="custom-checkbox-label">
+                  <input type="checkbox" class="pfx-item-chk" value="NONE" checked>
+                  <span class="checkbox-text">仅普通 (无前缀)</span>
+                </label>
+                <label class="custom-checkbox-label">
+                  <input type="checkbox" class="pfx-item-chk" value="L" checked>
+                  <span class="checkbox-text">仅陆港 (L)</span>
+                </label>
+                <label class="custom-checkbox-label">
+                  <input type="checkbox" class="pfx-item-chk" value="B" checked>
+                  <span class="checkbox-text">仅病房 (B)</span>
+                </label>
+                <label class="custom-checkbox-label">
+                  <input type="checkbox" class="pfx-item-chk" value="T" checked>
+                  <span class="checkbox-text">仅特殊 (T)</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Action buttons -->
+            <div class="signing-actions-row" style="margin-top: 16px; display: flex; gap: 12px;">
+              <button type="button" class="btn btn-secondary" id="btn-signing-query">
+                🔍 筛选候选患者
+              </button>
+              <button type="button" class="btn btn-primary" id="btn-signing-generate">
+                🚀 按照示例生成签名单Excel (存入领取表)
+              </button>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- Candidate Patients Table & Generation Result Grid -->
+      <div class="signing-content-grid">
+        
+        <!-- Left: Selected Patients Table -->
+        <div class="card signing-table-card" style="flex: 1.2;">
+          <div class="card-header" style="justify-content: space-between;">
+            <div class="card-title">
+              <span>📋 所选范围患者列表 (直接拉取数据库记录)</span>
+              <span class="status-pill" id="signing-candidates-badge">0 人</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <label class="custom-checkbox-label" style="font-size: 13px;">
+                <input type="checkbox" id="signing-select-all-toggle" checked>
+                <span>全选 / 取消全选</span>
+              </label>
+            </div>
+          </div>
+          <div class="card-body" style="padding: 0; max-height: calc(100vh - 380px); overflow-y: auto;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="width: 45px; text-align: center;">选</th>
+                  <th>病理号</th>
+                  <th>姓名</th>
+                  <th>性别</th>
+                  <th>年龄</th>
+                  <th>送检医生</th>
+                  <th>送检日期</th>
+                  <th>临床诊断</th>
+                </tr>
+              </thead>
+              <tbody id="signing-candidates-tbody">
+                <tr>
+                  <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 30px;">
+                    请配置筛选条件并点击“筛选候选患者”
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Right: Generated Sheet Result & Preview -->
+        <div class="card signing-preview-card" id="signing-result-card" style="flex: 1; display: none;">
+          <div class="card-header">
+            <div class="card-title">
+              <span>📄 签名单预览</span>
+              <span class="status-pill success" id="signing-generated-filename" style="max-width: 180px; overflow: hidden; text-overflow: ellipsis;"></span>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-open-excel">📄 Excel打开</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-open-dir">📂 打开领取表</button>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-signing-print-sheet">🖨️ 打印签名单</button>
+            </div>
+          </div>
+          <div class="card-body" id="signing-preview-container" style="padding: 16px; overflow-y: auto; max-height: calc(100vh - 380px); background: #f8fafc;">
+            <!-- Rendered signing sheet table -->
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <div id="tab-search" class="workspace-panel">
+      <!-- Search Filters -->
+      <div class="card search-bar-card">
+        <div class="card-header">
+          <div class="card-title">🔍 病历条件查询与综合筛选</div>
+        </div>
+        <div class="card-body">
+          <form id="search-form">
+            <!-- Row 1: Date Range & Quick Buttons -->
+            <div class="search-filter-row" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--border-color);">
+              <div class="form-group" style="min-width: 150px;">
+                <label class="form-label">报告时间 (起始)</label>
+                <input type="date" id="search-start-date" class="form-control">
+              </div>
+              <div class="form-group" style="min-width: 150px;">
+                <label class="form-label">报告时间 (结束)</label>
+                <input type="date" id="search-end-date" class="form-control">
+              </div>
+              <div class="form-group" style="margin-bottom: 2px;">
+                <label class="form-label" style="visibility: hidden;">快捷</label>
+                <div class="date-quick-btns" style="display: flex; gap: 6px;">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-date-today">今日</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-date-week">本周</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-date-month">本月</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-date-all">全部时间</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Row 2: Status & Prefix & Text Filters -->
+            <div class="search-grid">
+              <div class="form-group">
+                <label class="form-label">病理号前缀</label>
+                <select id="search-prefix" class="form-control">
+                  <option value="ALL">所有前缀 (全部)</option>
+                  <option value="NONE">普通 (无前缀)</option>
+                  <option value="L">陆港 (L)</option>
+                  <option value="B">病房 (B)</option>
+                  <option value="T">特殊 (T)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">归档状态</label>
+                <select id="search-archived" class="form-control">
+                  <option value="ALL">所有归档状态</option>
+                  <option value="0">未归档 (0)</option>
+                  <option value="1">已归档 (1)</option>
+                  <option value="2">需重新归档 (2)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">审核状态</label>
+                <select id="search-review-status" class="form-control">
+                  <option value="ALL">所有审核状态</option>
+                  <option value="无需审核">普通 (无需审核)</option>
+                  <option value="待审核">待审核</option>
+                  <option value="免疫组化">免疫组化</option>
+                  <option value="完成审核">完成审核</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">姓名</label>
+                <input type="text" id="search-name" class="form-control" placeholder="患者姓名">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">病理号</label>
+                <input type="text" id="search-pathology-no" class="form-control" placeholder="完整或部分病理号">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">住院号</label>
+                <input type="text" id="search-inpatient-no" class="form-control" placeholder="住院号">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">门诊号</label>
+                <input type="text" id="search-outpatient-no" class="form-control" placeholder="门诊号">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">综合关键词</label>
+                <input type="text" id="search-keyword" class="form-control" placeholder="临床/镜下/部位等">
+              </div>
+
+              <div style="display: flex; gap: 8px; align-items: flex-end; margin-bottom: 2px;">
+                <button type="submit" class="btn btn-primary" id="btn-do-search">
+                  🔍 综合查询
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-reset-search" title="清空全部条件并重置为全部数据">
+                  🔄 取消所有筛选
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Search Results Table -->
+      <div class="card results-table-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>📋 查询结果</span>
+            <span class="status-pill" id="search-count-badge">0 条记录</span>
+          </div>
+        </div>
+        <div class="card-body" style="padding: 0;">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>病理号</th>
+                  <th>姓名</th>
+                  <th>性别</th>
+                  <th>年龄</th>
+                  <th>临床诊断</th>
+                  <th>送检部位</th>
+                  <th>送检医生</th>
+                  <th>送检日期</th>
+                  <th>状态</th>
+                  <th style="min-width: 280px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="search-results-tbody">
+                <tr>
+                  <td colspan="10" style="text-align: center; color: var(--text-muted); padding: 40px;">
+                    请输入条件并点击查询
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. SETTINGS WORKSPACE (系统设置工作区) -->
+    <div id="tab-settings" class="workspace-panel">
+      <div class="card" style="max-width: 800px; margin: 0 auto;">
+        <div class="card-header">
+          <div class="card-title">⚙️ 系统设置与工作目录配置</div>
+        </div>
+        <div class="card-body">
+          <form id="settings-form">
+            <div class="form-section">
+              <div class="section-label">📁 工作目录 (核心数据存储路径)</div>
+              <div class="form-group">
+                <label class="form-label" for="setting-work-dir">工作目录路径</label>
+                <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\AIagent\project\dermatology-system\工作目录">
+                <small style="color: var(--text-muted); margin-top: 4px;">
+                  系统将按照“统一归档”、“按患者归类”、“报告输出”、“特殊患者归档”、“数据库”标准结构自动维护文件。
+                </small>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-label">👨‍⚕️ 医生签名设置 (默认报告与审核医生)</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="setting-report-doc">报告医生</label>
+                  <input type="text" id="setting-report-doc" class="form-control" placeholder="如：张医生">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="setting-review-doc">审核医生</label>
+                  <input type="text" id="setting-review-doc" class="form-control" placeholder="如：李主任">
+                </div>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">💾 保存系统设置</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Setup Wizard Modal (首次进入引导向导) -->
+  <div id="setup-wizard-modal" class="wizard-overlay" style="display: none;">
+    <div class="wizard-dialog">
+      <div class="wizard-header">
+        <div class="wizard-title">👋 欢迎使用皮肤病理报告系统</div>
+        <div class="wizard-subtitle">首次进入系统，请先确认工作目录与医生签名信息</div>
+      </div>
+      <form id="wizard-form">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label class="form-label required" for="wizard-work-dir">工作目录位置</label>
+          <input type="text" id="wizard-work-dir" class="form-control" value="D:\AIagent\project\dermatology-system\工作目录" required>
+          <small style="color: var(--text-muted); margin-top: 4px;">
+            系统将自动在此目录下建立“统一归档”、“数据库”、“报告输出”等标准文件夹。
+          </small>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label required" for="wizard-report-doc">报告医生</label>
+            <input type="text" id="wizard-report-doc" class="form-control" value="张医生" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label required" for="wizard-review-doc">审核医生</label>
+            <input type="text" id="wizard-review-doc" class="form-control" value="李主任" required>
+          </div>
+        </div>
+
+        <div class="form-actions" style="margin-top: 24px;">
+          <button type="submit" class="btn btn-primary" style="width: 100%; height: 42px;">
+            🚀 完成设置并初始化工作目录
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- A4 Report Preview Modal (Word报告预览弹窗) -->
+  <div id="report-preview-modal" class="a4-preview-modal-overlay" style="display: none;">
+    <div class="preview-modal-dialog">
+      <div class="preview-modal-header">
+        <div style="font-weight: 600; font-size: 16px;">
+          📄 病理报告单预览 (<span id="modal-preview-filename"></span>)
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn btn-primary btn-sm" id="btn-modal-open-word">在Word中打开</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-close-preview-modal">✕ 关闭</button>
+        </div>
+      </div>
+      <div class="preview-modal-body" id="report-preview-body">
+        <!-- A4 HTML will be rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Text Template Library Modal -->
+  <div id="template-library-modal" class="wizard-overlay" style="display: none;">
+    <div class="template-modal-dialog">
+      <div class="preview-modal-header">
+        <div style="font-weight: 600; font-size: 16px;">
+          📖 病理文字模板库 (普通模板 + 免疫组化模板)
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-template-modal">✕ 关闭</button>
+      </div>
+
+      <div class="template-modal-toolbar">
+        <div class="template-cat-tabs" id="tmpl-cat-tabs">
+          <button type="button" class="tmpl-cat-btn active" data-cat="全部">全部 (<span id="cat-count-all">0</span>)</button>
+          <button type="button" class="tmpl-cat-btn" data-cat="普通模板">普通模板 (<span id="cat-count-normal">191</span>)</button>
+          <button type="button" class="tmpl-cat-btn" data-cat="免疫组化模板">免疫组化模板 (<span id="cat-count-ihc">58</span>)</button>
+        </div>
+        <div class="template-search-box">
+          <input type="text" id="tmpl-search-input" class="form-control" placeholder="搜索疾病名称或特征关键词...">
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-tmpl-search">清空</button>
+        </div>
+      </div>
+
+      <div class="template-list-container" id="tmpl-items-list">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Microscope Photo Zoom Modal -->
+  <div id="photo-zoom-modal" class="wizard-overlay" style="display: none;">
+    <div class="photo-zoom-dialog">
+      <div class="preview-modal-header">
+        <div style="font-weight: 600;" id="zoom-photo-title">照片预览</div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-zoom-modal">✕ 关闭</button>
+      </div>
+      <div class="photo-zoom-body" style="padding: 16px; text-align: center; background: #0f172a;">
+        <img id="zoom-photo-img" src="" alt="放大照片" style="max-width: 100%; max-height: 75vh; object-fit: contain; border-radius: 4px;">
+      </div>
+    </div>
+  </div>
+
+  <!-- Patient Associated Paths Modal (关联目录与文件) -->
+  <div id="patient-paths-modal" class="wizard-overlay" style="display: none;">
+    <div class="template-modal-dialog" style="max-width: 780px;">
+      <div class="preview-modal-header">
+        <div style="font-weight: 600; font-size: 16px;">
+          📂 患者关联文件与目录导航 (<span id="paths-modal-patient-info"></span>)
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-paths-modal">✕ 关闭</button>
+      </div>
+      <div style="padding: 16px 20px; overflow-y: auto; max-height: calc(85vh - 120px);">
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
+          点击“📂 定位打开”可直接在 Windows 文件资源管理器中高亮选中文件或打开文件夹；点击“📋 复制”复制绝对路径。
+        </p>
+        <div id="paths-modal-list" class="paths-list-container">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status Management Modal (修改归档/审核状态) -->
+  <div id="status-change-modal" class="wizard-overlay" style="display: none;">
+    <div class="wizard-dialog" style="max-width: 520px;">
+      <div class="wizard-header">
+        <div class="wizard-title">🏷️ 患者状态管理</div>
+        <div class="wizard-subtitle" id="status-modal-patient-info">患者：- | 病理号：-</div>
+      </div>
+      <form id="status-change-form">
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label">审核状态</label>
+          <select id="status-modal-review" class="form-control" style="font-size: 14px;">
+            <option value="无">无 (普通报告)</option>
+            <option value="待审核">待审核</option>
+            <option value="免疫组化">免疫组化</option>
+            <option value="待审核/免疫组化">待审核 + 免疫组化</option>
+            <option value="完成审核">完成审核</option>
+          </select>
+          <small style="color: var(--text-muted); margin-top: 4px; display: block;">
+            系统将同步在【特殊患者归档】中维护或撤销相应快捷归档文件夹。
+          </small>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 20px;">
+          <label class="form-label">归档状态</label>
+          <select id="status-modal-archived" class="form-control" style="font-size: 14px;">
+            <option value="0">未归档 (0)</option>
+            <option value="1">已归档 (1)</option>
+            <option value="2">需要重新归档 (2)</option>
+          </select>
+          <small style="color: var(--text-muted); margin-top: 4px; display: block;">
+            若修改为“已归档”，系统将自动触发打包归档到【按患者归档】。若修改为“未归档”，将撤销归档文件夹。
+          </small>
+        </div>
+
+        <div class="form-actions" style="justify-content: flex-end; margin-top: 20px;">
+          <button type="button" class="btn btn-secondary" id="btn-close-status-modal">取消</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-status-modal">💾 保存修改并同步文件</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Delete Patient Confirmation Modal (危险操作：删除报告) -->
+  <div id="delete-patient-modal" class="wizard-overlay" style="display: none;">
+    <div class="wizard-dialog" style="max-width: 520px; border: 2px solid #ef4444;">
+      <div class="wizard-header" style="border-bottom-color: #fee2e2;">
+        <div class="wizard-title" style="color: #b91c1c;">⚠️ 确认彻底删除病历与所有文件？</div>
+        <div class="wizard-subtitle" id="delete-modal-patient-info" style="color: #7f1d1d; font-weight: 600;">
+          患者：- | 病理号：-
+        </div>
+      </div>
+      <div style="padding: 16px 0; font-size: 13px; color: #374151; line-height: 1.6;">
+        <p style="color: #b91c1c; font-weight: 600; margin-bottom: 10px;">
+          此操作不可逆！确认后系统将执行以下清理操作：
+        </p>
+        <ul style="padding-left: 20px; margin-bottom: 12px; color: #4b5563;">
+          <li>从系统数据库中永久删除该患者所有记录及历史信息；</li>
+          <li>删除“统一归档\病理报告录入”中的草稿 Word 文件；</li>
+          <li>删除“统一归档\病理报告输出”中的最终 Word 报告；</li>
+          <li>删除“统一归档\病理照片”中该患者的照片文件夹及内部所有图片；</li>
+          <li>删除“按患者归档”与“特殊患者归档”中所有已归档的副本。</li>
+        </ul>
+        <p style="font-size: 12px; color: var(--text-muted);">
+          请确认是否继续删除？
+        </p>
+      </div>
+      <div class="form-actions" style="justify-content: flex-end; margin-top: 14px;">
+        <button type="button" class="btn btn-secondary" id="btn-cancel-delete-modal">取消</button>
+        <button type="button" class="btn btn-danger" id="btn-confirm-delete-modal" style="background: #dc2626; color: white; border: none; padding: 6px 16px; border-radius: 6px; font-weight: 600; cursor: pointer;">
+          🗑️ 确认彻底删除
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Main JavaScript Logic -->
+  <script src="js/app.js"></script>
+</body>
+</html>
