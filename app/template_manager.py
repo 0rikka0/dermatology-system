@@ -194,11 +194,11 @@ def parse_photo_filename(filename):
             "index_num": 999
         }
 
-def format_pathology_diagnosis(items):
+def format_pathology_diagnosis(items, image_count=None):
     """
     Synthesizes standard pathological diagnosis from photo diagnoses.
     Format examples:
-      - 1 item: '表皮囊肿'
+      - Single-image report (image_count == 1 or single item): '表皮囊肿' (no index prefix)
       - Multiple: '1.2.交界痣；3.皮内痣'
       - Different: '1.表皮囊肿；2.脂肪瘤'
     """
@@ -227,6 +227,23 @@ def format_pathology_diagnosis(items):
 
     if not cleaned:
         return ""
+
+    is_single_image_report = False
+    if image_count is not None:
+        try:
+            is_single_image_report = (int(image_count) == 1)
+        except (TypeError, ValueError):
+            is_single_image_report = False
+
+    if is_single_image_report:
+        unique_diags = []
+        for _, diag in cleaned:
+            if diag not in unique_diags:
+                unique_diags.append(diag)
+        return "；".join(unique_diags)
+
+    if len(cleaned) == 1 and image_count is None:
+        return cleaned[0][1]
 
     if len(cleaned) == 1 and not cleaned[0][0]:
         return cleaned[0][1]

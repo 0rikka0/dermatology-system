@@ -45,8 +45,8 @@ def generate_diagram_workflow(out_path):
         ("01", "患者登记录入", "输入基本信息与病史\n规划图片数(1-9图)\n生成初稿并建照片夹", (59, 130, 246)),
         ("02", "显微摄片导入", "显微镜拍摄病理照片\n存入患者专属文件夹\n以序号+诊断规范命名", (16, 185, 129)),
         ("03", "报告制作排版", "一键调阅临床大体照\n装配显微图与智能词库\n自适应排版行数对齐", (139, 92, 246)),
-        ("04", "质控审核把关", "常规病例直接归档\n待审核/免疫组化送审\n审核医师双签确认", (245, 158, 11)),
-        ("05", "极速单页打印", "双列表严格安全隔离\n仅打印第一页防废纸\n一键生成签领单交接", (239, 68, 68)),
+        ("04", "质控审核把关", "常规病例直接归档\n待审/组化/重切送审\n审核医师签字改期", (245, 158, 11)),
+        ("05", "Word单页打印", "双列表严格安全隔离\n调用Word仅打第1页\n生成Excel+Word签名单", (239, 68, 68)),
     ]
 
     card_w = 270
@@ -102,8 +102,8 @@ def generate_diagram_special_flow(out_path):
     # 节点 1: 制作台
     draw.rounded_rectangle([60, 110, 320, 310], radius=14, fill=(238, 242, 255), outline=(79, 70, 229), width=3)
     draw.text((85, 130), "报告制作工作区", font=f_title, fill=(67, 56, 202))
-    draw.text((85, 175), "勾选 [待审核] 或", font=f_sub, fill=(55, 65, 81))
-    draw.text((85, 208), "勾选 [免疫组化]", font=f_sub, fill=(55, 65, 81))
+    draw.text((85, 175), "勾选 [待审核] /", font=f_sub, fill=(55, 65, 81))
+    draw.text((85, 208), "[免疫组化] / [重切]", font=f_sub, fill=(55, 65, 81))
     # 红色警示标签
     draw.rounded_rectangle([85, 250, 295, 290], radius=8, fill=(254, 226, 226))
     draw.text((100, 258), "× 严格禁止直接归档", font=f_badge, fill=(220, 38, 38))
@@ -121,8 +121,8 @@ def generate_diagram_special_flow(out_path):
     draw.text((475, 190), "疑难病例待上级把关", font=f_sub, fill=(107, 114, 128))
     # 子盒子 2
     draw.rounded_rectangle([455, 245, 685, 325], radius=10, fill=(255, 255, 255), outline=(245, 158, 11), width=2)
-    draw.text((475, 260), "特殊患者归档/免疫组化", font=f_badge, fill=(180, 83, 9))
-    draw.text((475, 290), "等待特染/抗体染色结果", font=f_sub, fill=(107, 114, 128))
+    draw.text((475, 260), "特殊患者归档/组化/重切", font=f_badge, fill=(180, 83, 9))
+    draw.text((475, 290), "等待特染或重切复核结果", font=f_sub, fill=(107, 114, 128))
 
     # 连线 -> 审核工作区
     draw.line([715, 210, 805, 210], fill=(217, 119, 6), width=4)
@@ -135,7 +135,7 @@ def generate_diagram_special_flow(out_path):
     draw.text((845, 208), "确认补充诊断意见", font=f_sub, fill=(55, 65, 81))
     # 绿色通过按钮模拟
     draw.rounded_rectangle([845, 250, 1055, 290], radius=8, fill=(16, 185, 129))
-    draw.text((865, 258), "[ 审核通过并归档 ]", font=f_badge, fill=(255, 255, 255))
+    draw.text((878, 258), "[ 完成审核 ]", font=f_badge, fill=(255, 255, 255))
 
     # 连线 -> 终审入库
     draw.line([1080, 210, 1170, 210], fill=(5, 150, 105), width=4)
@@ -143,11 +143,11 @@ def generate_diagram_special_flow(out_path):
 
     # 节点 4: 终审闭环与打印
     draw.rounded_rectangle([1185, 70, 1445, 350], radius=14, fill=(240, 253, 250), outline=(13, 148, 136), width=3)
-    draw.text((1205, 95), "闭环归档与放行", font=f_title, fill=(15, 118, 110))
+    draw.text((1205, 95), "制作区归档与放行", font=f_title, fill=(15, 118, 110))
     # 成果 1
     draw.rounded_rectangle([1205, 145, 1425, 225], radius=10, fill=(255, 255, 255), outline=(20, 184, 166), width=2)
-    draw.text((1220, 160), "移入: 完成审核目录", font=f_badge, fill=(15, 118, 110))
-    draw.text((1220, 190), "同步归档至按患者归档", font=f_sub, fill=(107, 114, 128))
+    draw.text((1220, 160), "制作区: 一键归档", font=f_badge, fill=(15, 118, 110))
+    draw.text((1220, 190), "移入完成审核及已归档报告", font=f_sub, fill=(107, 114, 128))
     # 成果 2
     draw.rounded_rectangle([1205, 245, 1425, 325], radius=10, fill=(255, 255, 255), outline=(20, 184, 166), width=2)
     draw.text((1220, 260), "报告输出: 特殊列表", font=f_badge, fill=(15, 118, 110))
@@ -400,13 +400,13 @@ def build_manual_pdf(pdf_path):
 
     # ---------------- 封面 / 标题区 ----------------
     story.append(Paragraph("皮肤病理报告系统", s_title))
-    story.append(Paragraph("快速入门操作手册 (图文教程 · v1.2 脱敏版)", s_subtitle))
-    story.append(Paragraph("【适用对象：皮肤科医师 / 报告录入员 / 质控主任 / 规培进修生】&nbsp;&nbsp;|&nbsp;&nbsp;【全流程单页精准打印 · 绿色免安装】", s_badge_bar))
+    story.append(Paragraph("快速入门操作手册 (图文教程 · v1.3 脱敏版)", s_subtitle))
+    story.append(Paragraph("【适用对象：皮肤科医师 / 报告录入员 / 质控主任 / 规培进修生】&nbsp;&nbsp;|&nbsp;&nbsp;【全流程 Word 单页打印 · 绿色免安装】", s_badge_bar))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#3b82f6"), spaceAfter=15))
 
     # 提示框：开箱即用
     callout_data = [[
-        Paragraph("<b>★ 新手快速导读：</b> 本手册采用图文通俗讲解。日常出具报告仅需掌握 <b>“录入 ➔ 摄片 ➔ 排版 ➔ 审核 ➔ 打印”</b> 五个核心动作。遇到 <b>“待审核”</b> 或 <b>“免疫组化”</b> 疑难病例时，系统会自动启动质控安全锁，请务必经由审核医生复核放行后再行出单。", s_tip)
+        Paragraph("<b>★ 新手快速导读：</b> 本手册采用图文通俗讲解。日常出具报告仅需掌握 <b>“录入 ➔ 摄片 ➔ 排版 ➔ 审核 ➔ 打印”</b> 五个核心动作。遇到 <b>“待审核”</b>、<b>“免疫组化”</b> 或 <b>“重切”</b> 病例时，系统会自动启动质控安全锁，请经由审核医生复核标记完成审核后，在制作列表一键归档并放行出单。", s_tip)
     ]]
     callout_table = Table(callout_data, colWidths=[487])
     callout_table.setStyle(TableStyle([
@@ -444,35 +444,35 @@ def build_manual_pdf(pdf_path):
 
     # 详细步骤拆解
     story.append(Paragraph("步骤 1：患者信息登记与模板初始化 (【患者信息录入】工作区)", s_h2))
-    story.append(Paragraph("• <b>录入表单：</b> 准确填入患者姓名、性别、年龄、病理号、门诊/住院号、送检科室、送检医生、临床诊断与临床病史。", s_body))
+    story.append(Paragraph("• <b>录入表单：</b> 准确填入患者姓名、性别、年龄（支持下拉选择 <code>岁/月/日</code> 或 <code>自由输入</code> 如 <code>1岁3月</code> 兼容儿童）、病理号、门诊/住院号、送检单位/科室（<code>H/T</code> 前缀支持修改）、送检医生、临床诊断与临床病史。", s_body))
     story.append(Paragraph("• <b>病理号前缀规范：</b> 普通门诊不带前缀（如 <code>2026110301</code>）；住院病房请选 <code>B</code>（如 <code>B2026110301</code>）；分院区选 <code>L</code>；会诊选 <code>H</code>；特殊标本选 <code>T</code>。<b>不同前缀当日自增序号独立递增，互不干扰</b>。", s_body))
     story.append(Paragraph("• <b>规划图片数与部位联动：</b> 估算该标本需要拍摄的照片数量（1至9张）。选定后，下方会自动生成相应数量的“送检部位”输入框。在生成报告时，每个部位将以 <code>1.部位名</code>、<code>2.部位名</code> 规范对齐于对应图片正下方。", s_body))
-    story.append(Paragraph("• <b>一键生成：</b> 点击【录入并生成报告】。系统自动在 <code>未归档报告/病理报告录入/</code> 生成初稿 Word，并自动在 <code>未归档报告/病理照片/</code> 为该患者建立专属摄片目录（<code>病理号_姓名</code>）。", s_body))
+    story.append(Paragraph("• <b>一键生成与照片查询：</b> 点击【保存并生成病理报告】。系统自动在 <code>未归档报告/病理报告录入/</code> 生成初稿 Word，并建立 <code>未归档报告/病理照片/病理号_姓名/</code>；选中今日患者后可直接点击【临床照片查询】。", s_body))
 
     story.append(Spacer(1, 8))
     story.append(Paragraph("步骤 2：显微镜摄片与图片存入", s_h2))
     story.append(Paragraph("• 在显微镜摄片电脑上完成切片拍摄后，将照片直接保存或拷贝至对应患者的 <code>未归档报告/病理照片/病理号_姓名/</code> 文件夹中。", s_body))
-    story.append(Paragraph("• <b>文件命名建议：</b> 推荐采用 <code>1_基底细胞癌40X.jpg</code> 或 <code>序号+诊断</code> 格式，系统将自动根据文件名中的关键词智能推荐病理描述词库。", s_body))
+    story.append(Paragraph("• <b>文件命名建议：</b> 推荐采用 <code>1_基底细胞癌40X.jpg</code> 或 <code>序号+诊断</code> 格式，系统将自动根据文件名中的关键词智能推荐病理描述词库；单张图片报告合成病理诊断默认去序号，多图保留序号。", s_body))
 
     story.append(Spacer(1, 8))
     story.append(Paragraph("步骤 3：报告制作、调图与排版 (【报告制作】工作区)", s_h2))
-    story.append(Paragraph("• <b>进入编辑：</b> 点击左侧工作列表中的患者卡片（默认列出今日患者，可自由切换日期查询）。", s_body))
+    story.append(Paragraph("• <b>进入编辑：</b> 左侧列表按病理号正序排列，以不同填充颜色区分已保存、已归档、待审/组化/重切、完成审核未归档（提示“需重新归档”）等状态，点击选中患者即可编辑。", s_body))
     story.append(Paragraph("• <b>临床照片快速调阅：</b> 界面设有【临床照片查询】按钮。点击后，系统自动在 <code>未归档报告/临床照片/</code> 检索该患者姓名的皮损大体照片文件夹，若存在则直接唤起资源管理器打开，便于对照临床表现。", s_body))
     story.append(Paragraph("• <b>图片点选装配：</b> 界面以清晰缩略图展示已摄照片，支持一键点选替换 Word 模板中的预留占位框。如拍摄张数少于预设位，排版引擎会自动剥离多余空白框，无需担心出现黑色空白矩形。", s_body))
     story.append(Paragraph("• <b>诊断词库智能推荐：</b> 右侧词库栏自动关联推荐常见病描述（如皮脂腺痣、脂溢性角化、银屑病等），点击【一键填入】即可将标准镜下描述与诊断直接填入文本框。", s_body))
-    story.append(Paragraph("• <b>智能排版保存：</b> 点击【保存报告】。系统自动按行距15磅和图片规格重算行高补偿，确保<b>第一页完整收尾于医生签名栏</b>，并存入 <code>未归档报告/病理报告输出/</code>。", s_body))
+    story.append(Paragraph("• <b>智能排版保存与打印：</b> 点击【保存报告】后写入 <code>未归档报告/病理报告输出/</code>，确保<b>第一页完整收尾于医生签名栏</b>；点击【一键打印第一页】直接调用 Word/WPS COM 打印引擎输出第 1 页。", s_body))
 
     story.append(Spacer(1, 10))
 
     # ---------------- 第三部分：特殊疑难质控与归档流转 ----------------
     story.append(Paragraph("步骤 4：质控审核机制与特殊病例流转 (【报告审核】工作区)", s_h2))
-    story.append(Paragraph("为杜绝未经上级确认的疑难报告或未出免疫组化结果的半成品报告误发患者，系统设置了严密的质控安全锁：", s_body))
+    story.append(Paragraph("为杜绝未经上级确认的疑难报告或未出免疫组化/重切结果的半成品报告误发患者，系统设置了严密的质控安全锁：", s_body))
 
     warn_box = [[
         Paragraph("<b>！质控红线原则：</b><br/>"
-                  "1. 凡勾选 <b>[待审核]</b> 或 <b>[免疫组化]</b> 的报告，在制作台<b>绝对禁止直接归档</b>（点击归档将弹出警示拦截）。<br/>"
-                  "2. 保存时，系统自动将报告派发到 <code>特殊患者归档/待审核</code> 或 <code>特殊患者归档/免疫组化</code> 待查队列中。<br/>"
-                  "3. 必须由审核医师在【报告审核】工作区完成复核并点击【审核通过并归档】，系统才会将其转移至 <code>特殊患者归档/完成审核</code> 并同步入库 <code>按患者归档</code>，解除打印锁定！", s_warn)
+                  "1. 凡勾选 <b>[待审核]</b>、<b>[免疫组化]</b> 或 <b>[重切]</b> 的未完成审核报告，在制作台<b>绝对禁止直接归档</b>（点击归档将弹出警示拦截）。<br/>"
+                  "2. 保存时，系统自动将报告派发到 <code>特殊患者归档/待审核</code>、<code>免疫组化</code> 或 <code>重切</code> 待查队列中。<br/>"
+                  "3. 审核医师在【报告审核】工作区可修改医生签名及报告日期，点击【完成审核】后返回制作列表（显示“需重新归档”提示），由制作区点击【一键归档】正式存入 <code>特殊患者归档/完成审核</code> 与 <code>已归档报告</code>！", s_warn)
     ]]
     w_table = Table(warn_box, colWidths=[487])
     w_table.setStyle(TableStyle([
@@ -504,11 +504,11 @@ def build_manual_pdf(pdf_path):
 
     layout_table_data = [
         [Paragraph("图片规格", s_table_hdr), Paragraph("图片布局", s_table_hdr), Paragraph("镜下描述可用行数", s_table_hdr), Paragraph("病理诊断可用行数", s_table_hdr), Paragraph("第一页收尾位置", s_table_hdr)],
-        [Paragraph("1 张图 (单图)", s_table_text), Paragraph("居中大图 (1行)", s_table_text), Paragraph("14 行 (含标题)", s_table_text), Paragraph("10 行 (含标题)", s_table_text), Paragraph("精确收于报告日期", s_table_text)],
-        [Paragraph("2 张图 (双图)", s_table_text), Paragraph("左右并排 (1行)", s_table_text), Paragraph("14 行 (含标题)", s_table_text), Paragraph("8 行 (含标题)", s_table_text), Paragraph("精确收于报告日期", s_table_text)],
-        [Paragraph("3 张图 (三图)", s_table_text), Paragraph("紧凑陈列 (1行)", s_table_text), Paragraph("14 行 (含标题)", s_table_text), Paragraph("10 行 (含标题)", s_table_text), Paragraph("精确收于报告日期", s_table_text)],
+        [Paragraph("1 张图 (单图)", s_table_text), Paragraph("居中大图 (1行)", s_table_text), Paragraph("15 行 (含标题)", s_table_text), Paragraph("10 行 (含标题)", s_table_text), Paragraph("精确收于报告日期", s_table_text)],
+        [Paragraph("2 张图 (双图)", s_table_text), Paragraph("左右并排 (1行)", s_table_text), Paragraph("14 行 (含标题)", s_table_text), Paragraph("10 行 (含标题)", s_table_text), Paragraph("精确收于报告日期", s_table_text)],
+        [Paragraph("3 张图 (三图)", s_table_text), Paragraph("紧凑陈列 (1行)", s_table_text), Paragraph("15 行 (含标题)", s_table_text), Paragraph("10 行 (含标题)", s_table_text), Paragraph("精确收于报告日期", s_table_text)],
         [Paragraph("4 - 6 张图", s_table_text), Paragraph("双行阵列 (2行)", s_table_text), Paragraph("10 行 (含标题)", s_table_text), Paragraph("6 行 (含标题)", s_table_text), Paragraph("压缩空行，首页保全", s_table_text)],
-        [Paragraph("7 - 9 张图", s_table_text), Paragraph("九宫格阵列 (3行)", s_table_text), Paragraph("4 行 (含标题)", s_table_text), Paragraph("3 行 (含标题)", s_table_text), Paragraph("极度紧凑，绝不超页", s_table_text)]
+        [Paragraph("7 - 9 张图", s_table_text), Paragraph("九宫格阵列 (3行)", s_table_text), Paragraph("5 行 (含标题)", s_table_text), Paragraph("3 行 (含标题)", s_table_text), Paragraph("极度紧凑，绝不超页", s_table_text)]
     ]
     lt_flow = Table(layout_table_data, colWidths=[90, 95, 105, 105, 92])
     lt_flow.setStyle(TableStyle([
@@ -533,17 +533,17 @@ def build_manual_pdf(pdf_path):
     # ---------------- 第四部分：配套工具与高频操作 ----------------
     story.append(Paragraph("四、实用配套工具：签名单生成与综合查询", s_h1))
 
-    story.append(Paragraph("1. 报告领取签领单自动化生成 (【报告领取签名单】工作区)", s_h2))
-    story.append(Paragraph("• <b>自由筛选：</b> 可自由设定出具报告的起始日期与截止日期；支持多选前缀（如同时勾选门诊与病房 B）。", s_body))
-    story.append(Paragraph("• <b>自动制表：</b> 系统即刻汇总明细列表，点击【生成签领单并打印】，自动生成规范带留样签名字段的 Word 文档，并即时送达打印机，交接清晰有据可查。", s_body))
+    story.append(Paragraph("1. 报告领取签领单自动化生成 (【报告签名单】工作区)", s_h2))
+    story.append(Paragraph("• <b>自由筛选：</b> 可自由设定<b>送检日期</b>的起始与截止日期；支持多选前缀（如同时勾选门诊与病房 B）。", s_body))
+    story.append(Paragraph("• <b>双格式输出与手术日期标注：</b> 点击【生成签名单 (Excel + Word)】，同时在 <code>领取表/</code> 生成 Excel 与无表格空行的 Word 文件；Word 签名单以“送检日期”标注统计范围并醒目给出<b>手术日期</b>（送检日期前一个工作日，仅供参考）。点击打印自动调用 Word 输出。", s_body))
 
     story.append(Spacer(1, 8))
-    story.append(Paragraph("2. 病例综合查询与穿透式维护 (【病例综合查询】工作区)", s_h2))
-    story.append(Paragraph("• <b>全要素组合检索：</b> 支持模糊搜索姓名、病理号、住院号、门诊号；可按“未归档 / 已归档 / 需要重新归档 / 待审核 / 完成审核”状态一键组合过滤。", s_body))
-    story.append(Paragraph("• <b>穿透式文件夹定位：</b> 对查询出的任意病例，支持在卡片中直接一键唤起资源管理器，直达其【病理报告输出】、【病理照片文件夹】或【按患者归档文件夹】。", s_body))
+    story.append(Paragraph("2. 病例综合查询与穿透式维护 (【病历综合查询】工作区)", s_h2))
+    story.append(Paragraph("• <b>全要素组合检索：</b> 支持按<b>送检日期</b>范围、姓名、病理号、住院号、门诊号及“未归档 / 已归档 / 需重新归档 / 待审核 / 免疫组化 / 重切 / 完成审核”状态组合过滤。", s_body))
+    story.append(Paragraph("• <b>穿透式文件夹定位：</b> 对查询出的任意病例，支持在卡片中直接一键唤起资源管理器，直达其【病理报告输出】、【病理照片文件夹】或【已归档报告】。", s_body))
     story.append(Paragraph("• <b>信息修正与二次修改保护：</b>", s_body))
-    story.append(Paragraph("&nbsp;&nbsp;a) 若仅录入信息打错（如年龄、病理号微调），可直接点击【修改信息】即刻修正生效。<br/>"
-                           "&nbsp;&nbsp;b) 若需修改显微照片或镜下诊断，点击【进入制作】重新排版保存。系统会自动将归档状态变更为 <b>“需要重新归档”</b>，避免静默篡改历史已封存档案。经人工核对无误后点击重新归档，方可覆盖归档病历，全方位保护医疗文书严肃性！", s_body))
+    story.append(Paragraph("&nbsp;&nbsp;a) 在录入页修改已保存/已归档患者信息后，系统同步更新数据库及草稿/输出/特殊归档文件名与内容（不改 <code>已归档报告/</code>），并弹窗询问是否立即重新归档（选“是”自动归档，选“否”置为 <b>“需要重新归档”</b>）。<br/>"
+                           "&nbsp;&nbsp;b) 在制作工作区修改显微照片或镜下诊断并重新保存时，亦会自动置为 <b>“需要重新归档”</b>，防止静默篡改历史已封存档案。", s_body))
 
     story.append(Spacer(1, 12))
     # ---------------- 第五部分：常见问题与排错指南 ----------------
@@ -554,7 +554,7 @@ def build_manual_pdf(pdf_path):
          "答：系统默认根据“患者姓名”在 <code>未归档报告/临床照片/</code> 下查找同名子文件夹。如果临床摄片人员尚未将照片导入，或文件夹名称含有错别字，系统会自动打开临床照片总目录，您可以手动检索或将大体照片放入该目录即可。"),
 
         ("Q2：为什么在报告制作台点击“归档”按钮弹出了红色警告？",
-         "答：这是系统的质控保护机制。该病例勾选了“待审核”或“免疫组化”，属于特殊疑难病例，必须由审核医生在【报告审核】工作区完成复核并点击“审核通过并归档”，普通制作界面禁止越权直接归档。"),
+         "答：这是系统的质控保护机制。该病例勾选了“待审核”、“免疫组化”或“重切”且尚未在【报告审核】区完成审核，必须先由审核医生点击“完成审核”后，再返回报告制作台点击一键归档。"),
 
         ("Q3：打印机打出来的报告真的只有第一页吗？第二页病史去哪了？",
          "答：是的！系统底层通过专用单页打印指令，硬件强制仅输出第 1 页。第二页的病史资料完整保存在生成的 Word 文件内部，供电子档案终身查阅追溯，绝不浪费一张纸。"),

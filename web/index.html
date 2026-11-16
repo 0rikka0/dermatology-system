@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>皮肤病理报告系统</title>
-  <link rel="stylesheet" href="css/style.css?v=2.2">
+  <link rel="stylesheet" href="css/style.css?v=2.4">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔬</text></svg>">
 </head>
 <body>
@@ -135,7 +135,15 @@
 
                   <div class="form-group">
                     <label class="form-label required" for="patient-age">年龄</label>
-                    <input type="text" id="patient-age" class="form-control" placeholder="如 45" required>
+                    <div style="display: flex; gap: 6px;">
+                      <input type="text" id="patient-age" class="form-control" placeholder="如 45" required style="flex: 1; min-width: 70px;">
+                      <select id="patient-age-unit" class="form-control" style="width: 96px; padding: 6px 8px;">
+                        <option value="岁" selected>岁</option>
+                        <option value="月">月</option>
+                        <option value="日">日</option>
+                        <option value="自由输入">自由输入</option>
+                      </select>
+                    </div>
                   </div>
 
                   <div class="form-group">
@@ -156,13 +164,13 @@
                   </div>
 
                   <div class="form-group">
-                    <label class="form-label">送检单位</label>
-                    <input type="text" class="form-control" value="本院" readonly>
+                    <label class="form-label" for="patient-send-unit">送检单位</label>
+                    <input type="text" id="patient-send-unit" class="form-control" value="本院" readonly>
                   </div>
 
                   <div class="form-group">
-                    <label class="form-label">送检科室</label>
-                    <input type="text" class="form-control" value="皮肤科" readonly>
+                    <label class="form-label" for="patient-department">送检科室</label>
+                    <input type="text" id="patient-department" class="form-control" value="皮肤科" readonly>
                   </div>
                 </div>
               </div>
@@ -271,6 +279,9 @@
                   </button>
                   <button type="button" class="btn btn-secondary btn-sm" id="btn-open-photo-dir">
                     📂 打开照片文件夹
+                  </button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-entry-find-clinical">
+                    📷 临床照片查询
                   </button>
                   <button type="button" class="btn btn-success btn-sm" id="btn-edit-selected">
                     ✏️ 修改患者信息
@@ -444,6 +455,10 @@
                     <input type="checkbox" id="mk-is-needs-ihc">
                     <span class="checkbox-text">🧪 标记为【需免疫组化报告】</span>
                   </label>
+                  <label class="custom-checkbox-label">
+                    <input type="checkbox" id="mk-is-needs-recut">
+                    <span class="checkbox-text">✂️ 标记为【需重切报告】</span>
+                  </label>
                 </div>
               </div>
 
@@ -565,7 +580,7 @@
                   </div>
                   <div class="form-group">
                     <label class="form-label">报告日期</label>
-                    <input type="text" id="rev-report-date" class="form-control" readonly>
+                    <input type="date" id="rev-report-date" class="form-control">
                   </div>
                 </div>
               </div>
@@ -631,9 +646,6 @@
                 </button>
                 <button type="button" class="btn btn-success" id="btn-rev-approve">
                   ✅ 完成审核 (2.9)
-                </button>
-                <button type="button" class="btn btn-warning" id="btn-rev-archive">
-                  📦 打包归档 (3.0)
                 </button>
               </div>
             </div>
@@ -734,7 +746,7 @@
             
             <!-- Date range row -->
             <div class="signing-row">
-              <div class="signing-label">📅 报告时间范围：</div>
+              <div class="signing-label">📅 送检日期范围：</div>
               <div class="signing-inputs-group">
                 <div style="display: flex; gap: 8px; align-items: center;">
                   <input type="date" id="signing-start-date" class="form-control" style="width: 160px;">
@@ -783,7 +795,7 @@
                 🔍 筛选候选患者
               </button>
               <button type="button" class="btn btn-primary" id="btn-signing-generate">
-                🚀 按照示例生成签名单Excel (存入领取表)
+                🚀 生成签名单 (Excel + Word)
               </button>
             </div>
 
@@ -842,6 +854,7 @@
             </div>
             <div style="display: flex; gap: 6px;">
               <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-open-excel">📄 Excel打开</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-open-word">📝 Word打开</button>
               <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-open-dir">📂 打开领取表</button>
               <button type="button" class="btn btn-primary btn-sm" id="btn-signing-print-sheet">🖨️ 打印签名单</button>
             </div>
@@ -864,11 +877,11 @@
             <!-- Row 1: Date Range & Quick Buttons -->
             <div class="search-filter-row" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--border-color);">
               <div class="form-group" style="min-width: 150px;">
-                <label class="form-label">报告时间 (起始)</label>
+                <label class="form-label">送检日期 (起始)</label>
                 <input type="date" id="search-start-date" class="form-control">
               </div>
               <div class="form-group" style="min-width: 150px;">
-                <label class="form-label">报告时间 (结束)</label>
+                <label class="form-label">送检日期 (结束)</label>
                 <input type="date" id="search-end-date" class="form-control">
               </div>
               <div class="form-group" style="margin-bottom: 2px;">
@@ -912,6 +925,7 @@
                   <option value="无需审核">普通 (无需审核)</option>
                   <option value="待审核">待审核</option>
                   <option value="免疫组化">免疫组化</option>
+                  <option value="重切">重切</option>
                   <option value="完成审核">完成审核</option>
                 </select>
               </div>
@@ -1004,7 +1018,7 @@
               <div class="section-label">📁 工作目录 (核心数据存储路径)</div>
               <div class="form-group">
                 <label class="form-label" for="setting-work-dir">工作目录路径</label>
-                <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\AIagent\project\dermatology-system\工作目录">
+                <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\dermatology-system\工作目录">
                 <small style="color: var(--text-muted); margin-top: 4px;">
                   系统将按照“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”、“领取表”标准结构自动维护文件。
                 </small>
@@ -1045,7 +1059,7 @@
       <form id="wizard-form">
         <div class="form-group" style="margin-bottom: 14px;">
           <label class="form-label required" for="wizard-work-dir">工作目录位置</label>
-          <input type="text" id="wizard-work-dir" class="form-control" value="D:\AIagent\project\dermatology-system\工作目录" required>
+          <input type="text" id="wizard-work-dir" class="form-control" value="D:\dermatology-system\工作目录" required>
           <small style="color: var(--text-muted); margin-top: 4px;">
             系统将自动在此目录下建立“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”等标准文件夹。
           </small>
@@ -1164,7 +1178,11 @@
             <option value="无">无 (普通报告)</option>
             <option value="待审核">待审核</option>
             <option value="免疫组化">免疫组化</option>
+            <option value="重切">重切</option>
             <option value="待审核/免疫组化">待审核 + 免疫组化</option>
+            <option value="待审核/重切">待审核 + 重切</option>
+            <option value="免疫组化/重切">免疫组化 + 重切</option>
+            <option value="待审核/免疫组化/重切">待审核 + 免疫组化 + 重切</option>
             <option value="完成审核">完成审核</option>
           </select>
           <small style="color: var(--text-muted); margin-top: 4px; display: block;">
@@ -1258,6 +1276,6 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- Main JavaScript Logic -->
-  <script src="js/app.js?v=2.2"></script>
+  <script src="js/app.js?v=2.4"></script>
 </body>
 </html>

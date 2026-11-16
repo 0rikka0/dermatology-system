@@ -154,7 +154,7 @@ def generate_report_file(templates_dir, output_path, data):
     name = data.get("name", "")
     gender = data.get("gender", "")
     age = str(data.get("age", ""))
-    if age and not age.endswith("岁") and not age.endswith("月") and not age.endswith("天"):
+    if age and not age.endswith(("岁", "月", "日", "天")):
         age += "岁"
     pathology_no = data.get("pathology_no", "")
     sub_date = data.get("submission_date", "")
@@ -175,8 +175,10 @@ def generate_report_file(templates_dir, output_path, data):
     format_cell(table0.rows[0].cells[3], f"病理号：{pathology_no}")
 
     # Row 1: 送检单位、科室、送检日期
-    format_cell(table0.rows[1].cells[0], "送检单位：本院")
-    format_cell(table0.rows[1].cells[1], "科室：皮肤科")
+    send_unit = str(data.get("send_unit") or "本院").strip() or "本院"
+    department = str(data.get("department") or "皮肤科").strip() or "皮肤科"
+    format_cell(table0.rows[1].cells[0], f"送检单位：{send_unit}")
+    format_cell(table0.rows[1].cells[1], f"科室：{department}")
     format_cell(table0.rows[1].cells[2], f"送检日期：{sub_date}")
     if len(table0.rows[1].cells) > 3 and table0.rows[1].cells[3] != table0.rows[1].cells[2]:
         format_cell(table0.rows[1].cells[3], f"送检日期：{sub_date}")

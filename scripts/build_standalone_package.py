@@ -82,23 +82,31 @@ def build_package():
                 shutil.copy2(src_pkg, os.path.join(sp_dst, pkg))
             print(f"  -> 复制第三方依赖库: {pkg}")
 
-    # 3. Copy Application Code & Assets
+    # 3. Copy Application Code & Assets (Simplified, Clean Portable Package)
     print("[Build] 复制系统源码及界面静态资源...")
     shutil.copytree(os.path.join(BASE_DIR, "app"), os.path.join(PACKAGE_DIR, "app"), dirs_exist_ok=True)
     shutil.copytree(os.path.join(BASE_DIR, "web"), os.path.join(PACKAGE_DIR, "web"), dirs_exist_ok=True)
-    shutil.copytree(os.path.join(BASE_DIR, "模板"), os.path.join(PACKAGE_DIR, "模板"), dirs_exist_ok=True)
+    
+    # 仅复制有效 docx 模板与图片占位符，不包含旧版二进制 .doc 文件
+    os.makedirs(os.path.join(PACKAGE_DIR, "模板"), exist_ok=True)
+    tmpl_src = os.path.join(BASE_DIR, "模板")
+    if os.path.exists(tmpl_src):
+        for item in os.listdir(tmpl_src):
+            if item.endswith((".docx", ".jpeg", ".jpg", ".png")):
+                shutil.copy2(os.path.join(tmpl_src, item), os.path.join(PACKAGE_DIR, "模板", item))
+                print(f"  -> 复制标准排版模板: {item}")
+
     if os.path.exists(os.path.join(BASE_DIR, "文字模板")):
         shutil.copytree(os.path.join(BASE_DIR, "文字模板"), os.path.join(PACKAGE_DIR, "文字模板"), dirs_exist_ok=True)
-    if os.path.exists(os.path.join(BASE_DIR, "完成报告示例")):
-        shutil.copytree(os.path.join(BASE_DIR, "完成报告示例"), os.path.join(PACKAGE_DIR, "完成报告示例"), dirs_exist_ok=True)
-    if os.path.exists(os.path.join(BASE_DIR, "报告领取签名单示例.xlsx")):
-        shutil.copy2(os.path.join(BASE_DIR, "报告领取签名单示例.xlsx"), os.path.join(PACKAGE_DIR, "报告领取签名单示例.xlsx"))
+        print("  -> 复制文字模板词库")
+
+    # 规范工作目录结构（纯净初始工作环境，不含示例文档与冗余数据）
     shutil.copytree(os.path.join(BASE_DIR, "工作目录"), os.path.join(PACKAGE_DIR, "工作目录"), dirs_exist_ok=True)
     if os.path.exists(os.path.join(BASE_DIR, "文档")):
         shutil.copytree(os.path.join(BASE_DIR, "文档"), os.path.join(PACKAGE_DIR, "文档"), dirs_exist_ok=True)
         print("  -> 复制文档目录至安装包根目录")
 
-    # 清理工作目录下可能存在的文档目录及已归档报告示例文档
+    # 清理工作目录下可能存在的残留文档及已归档报告示例文档
     pkg_work_doc = os.path.join(PACKAGE_DIR, "工作目录", "文档")
     if os.path.exists(pkg_work_doc):
         shutil.rmtree(pkg_work_doc, ignore_errors=True)

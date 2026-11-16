@@ -12,6 +12,7 @@ SUBDIRECTORIES = [
     "数据库",
     os.path.join("特殊患者归档", "待审核"),
     os.path.join("特殊患者归档", "免疫组化"),
+    os.path.join("特殊患者归档", "重切"),
     os.path.join("特殊患者归档", "完成审核"),
     os.path.join("未归档报告", "临床照片"),
     os.path.join("未归档报告", "病理报告录入"),
@@ -257,13 +258,20 @@ def find_clinical_photo_folder(work_dir, patient_name, pathology_no=""):
 
 def rename_patient_files_and_folders(work_dir, old_no, old_name, new_no, new_name):
     """
-    Renames Word report file, output report file, and photo folder if pathology number or patient name changed.
+    Renames Word report file, output report file, photo folder, and special archive folders
+    if pathology number or patient name changed.
+    Does NOT touch 已归档报告/ (archived reports are only updated on explicit re-archive).
     """
     old_word = get_patient_word_path(work_dir, old_no, old_name)
     new_word = get_patient_word_path(work_dir, new_no, new_name)
 
     old_photo = get_patient_photo_dir(work_dir, old_no, old_name)
     new_photo = get_patient_photo_dir(work_dir, new_no, new_name)
+
+    old_prefix_base = f"{sanitize_filename(old_no)}_{sanitize_filename(old_name)}"
+    new_prefix_base = f"{sanitize_filename(new_no)}_{sanitize_filename(new_name)}"
+    old_prefix = f"{old_prefix_base}_"
+    new_prefix = f"{new_prefix_base}_"
 
     # 1. Rename draft Word file
     if old_word != new_word and os.path.exists(old_word):
@@ -276,32 +284,49 @@ def rename_patient_files_and_folders(work_dir, old_no, old_name, new_no, new_nam
                 pass
 
     # 2. Rename final output report file if exists
+    new_final_path = ""
     out_dir = get_output_report_dir(work_dir)
     if os.path.exists(out_dir):
-        old_prefix = f"{sanitize_filename(old_no)}_{sanitize_filename(old_name)}_"
         for f in os.listdir(out_dir):
             if f.startswith(old_prefix) and f.endswith(".docx"):
                 old_f = os.path.join(out_dir, f)
                 diag_part = f[len(old_prefix):]
-                new_f = os.path.join(out_dir, f"{sanitize_filename(new_no)}_{sanitize_filename(new_name)}_{diag_part}")
-                try:
-                    shutil.move(old_f, new_f)
-                except Exception:
-                    pass
+                new_f = os.path.join(out_dir, f"{new_prefix}{diag_part}")
+                if old_f != new_f:
+                    try:
+                        shutil.move(old_f, new_f)
+                    except Exception:
+                        pass
+                new_final_path = new_f if os.path.exists(new_f) else old_f
+                break
 
-    # 3. Rename archived report file in 已归档报告 if exists
-    arch_root = get_archive_root_dir(work_dir)
-    if os.path.exists(arch_root):
-        old_prefix = f"{sanitize_filename(old_no)}_{sanitize_filename(old_name)}_"
-        for f in os.listdir(arch_root):
-            if f.startswith(old_prefix) and f.endswith(".docx"):
-                old_f = os.path.join(arch_root, f)
-                diag_part = f[len(old_prefix):]
-                new_f = os.path.join(arch_root, f"{sanitize_filename(new_no)}_{sanitize_filename(new_name)}_{diag_part}")
-                try:
-                    shutil.move(old_f, new_f)
-                except Exception:
-                    pass
+    # 3. Rename special archive folders & internal report docx (excluding 已归档报告/)
+    if old_prefix_base != new_prefix_base:
+        for sub in ["待审核", "免疫组化", "重切", "完成审核"]:
+            spec_root = os.path.join(work_dir, "特殊患者归档", sub)
+            if not os.path.exists(spec_root):
+                continue
+            for entry in list(os.listdir(spec_root)):
+                if entry.startswith(old_prefix) or entry == old_prefix_base:
+                    old_dir = os.path.join(spec_root, entry)
+                    if not os.path.isdir(old_dir):
+                        continue
+                    suffix = entry[len(old_prefix_base):]
+                    new_entry = f"{new_prefix_base}{suffix}"
+                    new_dir = os.path.join(spec_root, new_entry)
+                    if old_dir != new_dir and not os.path.exists(new_dir):
+                        try:
+                            shutil.move(old_dir, new_dir)
+                        except Exception:
+                            new_dir = old_dir
+                    if os.path.isdir(new_dir):
+                        old_doc = os.path.join(new_dir, f"[病理报告]{entry}.docx")
+                        new_doc = os.path.join(new_dir, f"[病理报告]{new_entry}.docx")
+                        if os.path.exists(old_doc) and old_doc != new_doc:
+                            try:
+                                shutil.move(old_doc, new_doc)
+                            except Exception:
+                                pass
 
     # 4. Rename pathology photo folder
     if old_photo != new_photo and os.path.exists(old_photo):
@@ -319,7 +344,38 @@ def rename_patient_files_and_folders(work_dir, old_no, old_name, new_no, new_nam
                 pass
 
     ensure_patient_photo_dir(work_dir, new_no, new_name)
-    return {"word_path": new_word, "photo_dir": new_photo}
+    return {
+        "word_path": new_word,
+        "photo_dir": new_photo,
+        "old_photo_dir": old_photo,
+        "final_report_path": new_final_path
+    }
+
+
+def sync_updated_report_to_special_archives(work_dir, patient_data, report_file_path):
+    """
+    Overwrites report docx inside any existing 特殊患者归档/ subfolders for this patient,
+    without touching 已归档报告/.
+    """
+    if not report_file_path or not os.path.exists(report_file_path):
+        return []
+    p_no = patient_data.get("pathology_no", "")
+    p_name = patient_data.get("name", "")
+    prefix_base = f"{sanitize_filename(p_no)}_{sanitize_filename(p_name)}"
+    prefix = f"{prefix_base}_"
+    updated = []
+    for sub in ["待审核", "免疫组化", "重切", "完成审核"]:
+        spec_root = os.path.join(work_dir, "特殊患者归档", sub)
+        if not os.path.exists(spec_root):
+            continue
+        for entry in os.listdir(spec_root):
+            if entry.startswith(prefix) or entry == prefix_base:
+                spec_dir = os.path.join(spec_root, entry)
+                if os.path.isdir(spec_dir):
+                    dst = os.path.join(spec_dir, f"[病理报告]{entry}.docx")
+                    shutil.copy2(report_file_path, dst)
+                    updated.append(dst)
+    return updated
 
 def save_special_draft_queue(work_dir, patient_data, report_file_path):
     """
@@ -337,6 +393,7 @@ def save_special_draft_queue(work_dir, patient_data, report_file_path):
 
     is_pending = int(patient_data.get("is_pending_review", 0)) == 1 or "待审核" in str(patient_data.get("review_status", ""))
     is_ihc = int(patient_data.get("is_needs_ihc", 0)) == 1 or "免疫组化" in str(patient_data.get("review_status", ""))
+    is_recut = int(patient_data.get("is_needs_recut", 0)) == 1 or "重切" in str(patient_data.get("review_status", ""))
 
     saved_dirs = []
     duplicate_info = {
@@ -385,29 +442,17 @@ def save_special_draft_queue(work_dir, patient_data, report_file_path):
             archived_report_path = os.path.join(target_dir, archived_report_name)
             shutil.copy2(report_file_path, archived_report_path)
 
-    # 1. 待审核
-    pending_root = os.path.join(work_dir, "特殊患者归档", "待审核")
-    if is_pending:
-        t_dir = os.path.join(pending_root, safe_folder_name)
-        package_to_dir(t_dir)
-        saved_dirs.append(t_dir)
-    else:
-        if os.path.exists(pending_root):
-            for e in os.listdir(pending_root):
-                if e.startswith(prefix) or e == f"{sanitize_filename(p_no)}_{sanitize_filename(p_name)}":
-                    safe_delete_path(os.path.join(pending_root, e))
-
-    # 2. 免疫组化
-    ihc_root = os.path.join(work_dir, "特殊患者归档", "免疫组化")
-    if is_ihc:
-        t_dir = os.path.join(ihc_root, safe_folder_name)
-        package_to_dir(t_dir)
-        saved_dirs.append(t_dir)
-    else:
-        if os.path.exists(ihc_root):
-            for e in os.listdir(ihc_root):
-                if e.startswith(prefix) or e == f"{sanitize_filename(p_no)}_{sanitize_filename(p_name)}":
-                    safe_delete_path(os.path.join(ihc_root, e))
+    for cat_name, enabled in [("待审核", is_pending), ("免疫组化", is_ihc), ("重切", is_recut)]:
+        cat_root = os.path.join(work_dir, "特殊患者归档", cat_name)
+        if enabled:
+            t_dir = os.path.join(cat_root, safe_folder_name)
+            package_to_dir(t_dir)
+            saved_dirs.append(t_dir)
+        else:
+            if os.path.exists(cat_root):
+                for e in os.listdir(cat_root):
+                    if e.startswith(prefix) or e == f"{sanitize_filename(p_no)}_{sanitize_filename(p_name)}":
+                        safe_delete_path(os.path.join(cat_root, e))
 
     return {
         "success": True,
@@ -435,15 +480,18 @@ def archive_patient_report(work_dir, patient_data, report_file_path, is_from_rev
     safe_folder_name = f"{sanitize_filename(p_no)}_{sanitize_filename(p_name)}_{sanitize_filename(p_diag)}"
     prefix = f"{sanitize_filename(p_no)}_{sanitize_filename(p_name)}_"
 
-    is_still_pending = patient_data.get("review_status") in ("待审核", "免疫组化", "待审核/免疫组化") or (
-        (int(patient_data.get("is_pending_review", 0)) == 1 or int(patient_data.get("is_needs_ihc", 0)) == 1)
-        and patient_data.get("review_status") != "完成审核"
+    rev_st = str(patient_data.get("review_status", ""))
+    is_still_pending = (rev_st != "完成审核") and (
+        any(k in rev_st for k in ("待审核", "免疫组化", "重切"))
+        or int(patient_data.get("is_pending_review", 0)) == 1
+        or int(patient_data.get("is_needs_ihc", 0)) == 1
+        or int(patient_data.get("is_needs_recut", 0)) == 1
     )
 
     if not is_from_review and is_still_pending:
         return {
             "success": False,
-            "error": "标记为“待审核”或“免疫组化”的报告禁止在报告制作工作区直接归档！已在保存时自动放入特殊患者待审队列，请移步【报告审核】工作区完成专家审核后再进行归档。"
+            "error": "标记为“待审核”、“免疫组化”或“重切”的报告禁止在报告制作工作区直接归档！已在保存时自动放入特殊患者待审队列，请移步【报告审核】工作区完成专家审核后再进行归档。"
         }
 
     # 1. Main archive in '已归档报告' (Flat docx report file, NO subfolders, NO '[病理报告]' prefix!)
@@ -476,7 +524,8 @@ def archive_patient_report(work_dir, patient_data, report_file_path, is_from_rev
     is_special_patient = (
         int(patient_data.get("is_pending_review", 0)) == 1 or
         int(patient_data.get("is_needs_ihc", 0)) == 1 or
-        patient_data.get("review_status") in ("待审核", "免疫组化", "待审核/免疫组化", "完成审核")
+        int(patient_data.get("is_needs_recut", 0)) == 1 or
+        any(k in str(patient_data.get("review_status", "")) for k in ("待审核", "免疫组化", "重切", "完成审核"))
     )
 
     if is_special_patient and is_approved_special:
@@ -484,9 +533,9 @@ def archive_patient_report(work_dir, patient_data, report_file_path, is_from_rev
         os.makedirs(approved_root, exist_ok=True)
         approved_dir = os.path.join(approved_root, safe_folder_name)
 
-        # Check if an existing package was in 待审核 or 免疫组化
+        # Check if an existing package was in 待审核, 免疫组化 or 重切
         source_dir = None
-        for sub in ["待审核", "免疫组化"]:
+        for sub in ["待审核", "免疫组化", "重切"]:
             sub_root = os.path.join(work_dir, "特殊患者归档", sub)
             if os.path.exists(sub_root):
                 for e in os.listdir(sub_root):
@@ -540,8 +589,8 @@ def archive_patient_report(work_dir, patient_data, report_file_path, is_from_rev
                 archived_report_name = f"[病理报告]{safe_folder_name}.docx"
                 shutil.copy2(report_file_path, os.path.join(approved_dir, archived_report_name))
 
-        # Clean remaining in 待审核 and 免疫组化
-        for sub in ["待审核", "免疫组化"]:
+        # Clean remaining in 待审核, 免疫组化 and 重切
+        for sub in ["待审核", "免疫组化", "重切"]:
             sub_root = os.path.join(work_dir, "特殊患者归档", sub)
             if os.path.exists(sub_root):
                 for e in os.listdir(sub_root):
@@ -595,7 +644,7 @@ def sync_review_overwrites(work_dir, patient_data, new_report_path):
 
     # 2. 特殊患者归档
     archived_special_doc_name = f"[病理报告]{safe_folder_name}.docx"
-    for sub in ["待审核", "免疫组化", "完成审核"]:
+    for sub in ["待审核", "免疫组化", "重切", "完成审核"]:
         spec_patient_dir = os.path.join(work_dir, "特殊患者归档", sub, safe_folder_name)
         if os.path.exists(spec_patient_dir):
             dst = os.path.join(spec_patient_dir, archived_special_doc_name)
@@ -689,7 +738,17 @@ def locate_patient_all_paths(work_dir, patient_data):
         "exists": bool(spec_ihc and os.path.exists(spec_ihc))
     })
 
-    # 8. Special Archive (完成审核)
+    # 8. Special Archive (重切)
+    spec_recut = os.path.join(work_dir, "特殊患者归档", "重切", safe_folder_name) if safe_folder_name else ""
+    paths.append({
+        "key": "special_recut",
+        "name": "特殊患者归档 (重切)",
+        "path": spec_recut,
+        "is_file": False,
+        "exists": bool(spec_recut and os.path.exists(spec_recut))
+    })
+
+    # 9. Special Archive (完成审核)
     spec_approved = os.path.join(work_dir, "特殊患者归档", "完成审核", safe_folder_name) if safe_folder_name else ""
     paths.append({
         "key": "special_approved",
@@ -761,7 +820,7 @@ def delete_patient_all_files(work_dir, patient_data):
                         errors.append(f"删除归档报告失败: {e}")
 
     # 5. Special archives
-    for sub in ["待审核", "免疫组化", "完成审核"]:
+    for sub in ["待审核", "免疫组化", "重切", "完成审核"]:
         spec_root = os.path.join(work_dir, "特殊患者归档", sub)
         if os.path.exists(spec_root):
             for entry in os.listdir(spec_root):
@@ -802,6 +861,7 @@ def sync_status_file_operations(work_dir, patient_data, new_review_status, new_a
             pat_copy = dict(patient_data)
             pat_copy["is_pending_review"] = 1 if "待审核" in new_review_status else 0
             pat_copy["is_needs_ihc"] = 1 if "免疫组化" in new_review_status else 0
+            pat_copy["is_needs_recut"] = 1 if "重切" in new_review_status else 0
             pat_copy["review_status"] = new_review_status
             archive_patient_report(work_dir, pat_copy, report_f, is_from_review=(new_review_status == "完成审核"))
 
@@ -878,8 +938,8 @@ def revoke_patient_archive_files(work_dir, patient_data):
                     safe_delete_path(full)
                     removed.append(full)
 
-    # 2. 特殊患者归档 (待审核, 免疫组化, 完成审核)
-    for sub in ["待审核", "免疫组化", "完成审核"]:
+    # 2. 特殊患者归档 (待审核, 免疫组化, 重切, 完成审核)
+    for sub in ["待审核", "免疫组化", "重切", "完成审核"]:
         spec_root = os.path.join(work_dir, "特殊患者归档", sub)
         if os.path.exists(spec_root):
             for entry in os.listdir(spec_root):
@@ -915,15 +975,11 @@ def revoke_patient_approval_files(work_dir, patient_data, new_status):
 
     folder_name = os.path.basename(arch_dir)
 
-    if "待审核" in new_status:
-        spec_target = os.path.join(work_dir, "特殊患者归档", "待审核", folder_name)
-        os.makedirs(os.path.join(work_dir, "特殊患者归档", "待审核"), exist_ok=True)
-        shutil.copytree(arch_dir, spec_target, dirs_exist_ok=True)
-
-    if "免疫组化" in new_status:
-        spec_target = os.path.join(work_dir, "特殊患者归档", "免疫组化", folder_name)
-        os.makedirs(os.path.join(work_dir, "特殊患者归档", "免疫组化"), exist_ok=True)
-        shutil.copytree(arch_dir, spec_target, dirs_exist_ok=True)
+    for sub in ("待审核", "免疫组化", "重切"):
+        if sub in new_status:
+            spec_target = os.path.join(work_dir, "特殊患者归档", sub, folder_name)
+            os.makedirs(os.path.join(work_dir, "特殊患者归档", sub), exist_ok=True)
+            shutil.copytree(arch_dir, spec_target, dirs_exist_ok=True)
 
     safe_delete_path(arch_dir)
 

@@ -5,7 +5,10 @@ Uses standard library ThreadingHTTPServer.
 """
 import os
 import sys
+import re
+import html
 import json
+import threading
 import urllib.parse
 import mimetypes
 import subprocess
@@ -31,6 +34,7 @@ from app.path_manager import (
     locate_patient_all_paths,
     delete_patient_all_files,
     sync_status_file_operations,
+    sync_updated_report_to_special_archives,
     find_patient_archive_dir,
     find_patient_archive_path,
     revoke_patient_archive_files,
@@ -68,7 +72,138 @@ from app.template_manager import (
 )
 from app.doc_generator import generate_report_file, update_report_file
 from app.doc_preview import render_preview_html
-from app.signing_sheet_generator import generate_signing_sheet_excel, render_signing_sheet_html
+from app.signing_sheet_generator import (
+    generate_signing_sheet_excel,
+    generate_signing_sheet_word,
+    render_signing_sheet_html,
+    compute_surgery_date_str
+)
+
+def normalize_report_date(val):
+    """Normalize a date string ('YYYY-MM-DD' or 'YYYY年M月D日') into (cn_str, raw_str)."""
+    s = str(val or "").strip()
+    if not s:
+        return "", ""
+    m_iso = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", s)
+    if m_iso:
+        y, m, d = m_iso.groups()
+        return f"{y}年{int(m):02d}月{int(d):02d}日", f"{y}-{int(m):02d}-{int(d):02d}"
+    m_cn = re.match(r"^(\d{4})年(\d{1,2})月(\d{1,2})日?$", s)
+    if m_cn:
+        y, m, d = m_cn.groups()
+        return f"{y}年{int(m):02d}月{int(d):02d}日", f"{y}-{int(m):02d}-{int(d):02d}"
+    return s, ""
+
+
+def print_word_documents(file_paths, page1_only=True):
+    """
+    Print one or more .docx files via Microsoft Word (or WPS Writer fallback) COM automation.
+    When page1_only=True, uses wdPrintFromTo (Range=3, From='1', To='1') so only Page 1 prints.
+    Returns (printed_paths, failed_paths, error_message).
+    """
+    valid_paths = [os.path.normpath(p) for p in file_paths if p and os.path.exists(p)]
+    if not valid_paths:
+        return [], list(file_paths), "未找到可打印的 Word 文档文件"
+
+    ps_script = r"""
+$ErrorActionPreference = 'Stop'
+$paths = @($env:DERM_PRINT_PATHS | ConvertFrom-Json)
+$page1Only = ($env:DERM_PRINT_PAGE1 -eq '1')
+$app = $null
+foreach ($progId in @('Word.Application', 'KWPS.Application', 'wps.Application')) {
+    try {
+        $app = New-Object -ComObject $progId
+        if ($app) { break }
+    } catch {
+        $app = $null
+    }
+}
+if (-not $app) {
+    Write-Output '{"printed":[],"failed":[],"error":"未检测到可用的 Word 或 WPS 打印组件"}'
+    exit 2
+}
+$printed = @()
+$failed = @()
+$lastErr = ''
+try {
+    $app.Visible = $false
+    $app.DisplayAlerts = 0
+    $missing = [System.Type]::Missing
+    foreach ($p in $paths) {
+        $doc = $null
+        try {
+            $fn = [string]$p
+            $cc = $false
+            $ro = $true
+            try {
+                $doc = $app.Documents.Open([ref]$fn, [ref]$cc, [ref]$ro)
+            } catch {
+                $doc = $app.Documents.Open($p)
+            }
+            $bg = $false
+            $ap = $false
+            if ($page1Only) {
+                $rng = 3
+                $from = '1'
+                $to = '1'
+                $outFn = $missing
+                try {
+                    # wdPrintFromTo = 3, From='1', To='1'
+                    $doc.PrintOut([ref]$bg, [ref]$ap, [ref]$rng, [ref]$outFn, [ref]$from, [ref]$to)
+                } catch {
+                    # Fallback positional call for WPS compatibility
+                    $doc.PrintOut($false, $false, 3, '', '1', '1')
+                }
+            } else {
+                try {
+                    $doc.PrintOut([ref]$bg)
+                } catch {
+                    $doc.PrintOut($false)
+                }
+            }
+            $printed += $p
+        } catch {
+            $failed += $p
+            $lastErr = $_.Exception.Message
+        } finally {
+            if ($doc) {
+                $saveChanges = $false
+                try { $doc.Close([ref]$saveChanges) } catch { try { $doc.Close($false) } catch {} }
+                try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null } catch {}
+            }
+        }
+    }
+} finally {
+    try { $app.Quit() } catch {}
+    try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) | Out-Null } catch {}
+}
+@{ printed = $printed; failed = $failed; error = $lastErr } | ConvertTo-Json -Compress
+"""
+    env = os.environ.copy()
+    env["DERM_PRINT_PATHS"] = json.dumps(valid_paths, ensure_ascii=False)
+    env["DERM_PRINT_PAGE1"] = "1" if page1_only else "0"
+    timeout_sec = max(25, 12 + 8 * len(valid_paths))
+    try:
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_sec
+        )
+        out_lines = [l.strip() for l in (res.stdout or "").splitlines() if l.strip().startswith("{")]
+        if out_lines:
+            parsed = json.loads(out_lines[-1])
+            printed = parsed.get("printed") or []
+            failed = parsed.get("failed") or []
+            err = parsed.get("error") or ""
+            return printed, failed, err
+        err_out = (res.stderr or res.stdout or "").strip()
+        return [], valid_paths, err_out or f"Word 打印进程退出码: {res.returncode}"
+    except Exception as e:
+        return [], valid_paths, str(e)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIR = os.path.join(BASE_DIR, "web")
@@ -477,7 +612,9 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                                 if p_info["diagnosis"]:
                                     diagnoses_found.append(p_info["diagnosis"])
 
-                    auto_diag = format_pathology_diagnosis(parsed_items)
+                    img_cnt_param = query.get("image_count", [None])[0]
+                    eff_img_cnt = img_cnt_param if img_cnt_param is not None else patient.get("image_count")
+                    auto_diag = format_pathology_diagnosis(parsed_items, image_count=eff_img_cnt)
                     recs = recommend_templates(diagnoses_found)
 
                     self.send_json({
@@ -717,6 +854,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "final_report_path": final_report_path,
                 "is_pending_review": 1 if body.get("is_pending_review") else 0,
                 "is_needs_ihc": 1 if body.get("is_needs_ihc") else 0,
+                "is_needs_recut": 1 if body.get("is_needs_recut") else 0,
                 "report_doctor": data_for_doc["report_doctor"],
                 "review_doctor": data_for_doc["review_doctor"]
             })
@@ -765,11 +903,14 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
                 return
 
-            # Check: prohibited from maker if pending review / IHC (Requirement 3)
-            is_pending = int(patient.get("is_pending_review", 0)) == 1 or patient.get("review_status") in ("待审核", "待审核/免疫组化")
-            is_ihc = int(patient.get("is_needs_ihc", 0)) == 1 or patient.get("review_status") in ("免疫组化", "待审核/免疫组化")
-            if source == "maker" and (is_pending or is_ihc):
-                self.send_error_json("标记为“待审核”或“免疫组化”的报告禁止在报告制作工作区直接归档！已在保存时自动放入特殊患者待审队列，请移步【报告审核】工作区完成专家审核后再进行归档。", status=400)
+            # Check: prohibited from maker if pending review / IHC / recut and not yet approved (Requirement 3)
+            rev_st = str(patient.get("review_status", ""))
+            is_approved = (rev_st == "完成审核")
+            is_pending = int(patient.get("is_pending_review", 0)) == 1 or "待审核" in rev_st
+            is_ihc = int(patient.get("is_needs_ihc", 0)) == 1 or "免疫组化" in rev_st
+            is_recut = int(patient.get("is_needs_recut", 0)) == 1 or "重切" in rev_st
+            if source == "maker" and not is_approved and (is_pending or is_ihc or is_recut):
+                self.send_error_json("标记为“待审核”、“免疫组化”或“重切”的报告禁止在报告制作工作区直接归档！已在保存时自动放入特殊患者待审队列，请移步【报告审核】工作区完成专家审核后再进行归档。", status=400)
                 return
 
             report_file = patient.get("final_report_path")
@@ -780,7 +921,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json("未找到该患者生成的Word报告，请先制作并保存报告", status=400)
                 return
 
-            arch_res = archive_patient_report(work_dir, patient, report_file, is_from_review=(source == "review"))
+            arch_res = archive_patient_report(work_dir, patient, report_file, is_from_review=(source == "review" or is_approved))
             if not arch_res.get("success"):
                 self.send_error_json(arch_res.get("error", "归档失败"), status=400)
                 return
@@ -828,6 +969,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             rep_doc = body.get("report_doctor") or patient.get("report_doctor") or "张医生"
             rev_doc = body.get("review_doctor") or patient.get("review_doctor") or "李主任"
+            rep_date_cn, rep_date_raw = normalize_report_date(body.get("report_date"))
+            if not rep_date_cn:
+                rep_date_cn = patient.get("report_date", "")
+            if not rep_date_raw:
+                rep_date_raw = patient.get("report_date_raw", "")
 
             final_report_path = get_final_report_path(work_dir, p_no, patient["name"], path_diag)
 
@@ -840,22 +986,28 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "biopsy_sites": biopsy_sites,
                 "report_doctor": rep_doc,
                 "review_doctor": rev_doc,
-                "report_date": body.get("report_date") or patient.get("report_date")
+                "report_date": rep_date_cn
             })
 
             templates_dir = cfg.get("templates_dir")
             generate_report_file(templates_dir, final_report_path, data_for_doc)
 
             # Update database
+            is_pending_val = body.get("is_pending_review", patient.get("is_pending_review", 0))
+            is_ihc_val = body.get("is_needs_ihc", patient.get("is_needs_ihc", 0))
+            is_recut_val = body.get("is_needs_recut", patient.get("is_needs_recut", 0))
             update_patient_report_making(db_path, p_no, {
                 "pathology_diag": path_diag,
                 "microscopic_desc": micro_desc,
                 "selected_images": selected_images,
                 "final_report_path": final_report_path,
-                "is_pending_review": 1 if body.get("is_pending_review") else 0,
-                "is_needs_ihc": 1 if body.get("is_needs_ihc") else 0,
+                "is_pending_review": 1 if is_pending_val else 0,
+                "is_needs_ihc": 1 if is_ihc_val else 0,
+                "is_needs_recut": 1 if is_recut_val else 0,
                 "report_doctor": rep_doc,
-                "review_doctor": rev_doc
+                "review_doctor": rev_doc,
+                "report_date": rep_date_cn,
+                "report_date_raw": rep_date_raw
             })
 
             # Overwrite across 未归档报告/病理报告输出, 已归档报告, 特殊患者归档
@@ -963,25 +1115,21 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "final_report_path": final_report_path,
                 "is_pending_review": 1 if body.get("is_pending_review") else 0,
                 "is_needs_ihc": 1 if body.get("is_needs_ihc") else 0,
+                "is_needs_recut": 1 if body.get("is_needs_recut") else 0,
                 "report_doctor": data_for_doc["report_doctor"],
                 "review_doctor": data_for_doc["review_doctor"]
             })
 
-            # Attempt silent hardware printing of Page 1
-            print_ok = False
-            try:
-                norm_doc = os.path.normpath(final_report_path).replace("'", "''")
-                cmd = f'powershell -NoProfile -Command "$w = New-Object -ComObject Word.Application; $w.Visible = $false; $w.DisplayAlerts = 0; try {{ $d = $w.Documents.Open(\'{norm_doc}\'); $d.PrintOut([ref]$false, [ref]$false, [ref]4, [ref]$null, [ref]\'1\', [ref]\'1\'); $d.Close([ref]$false); }} finally {{ $w.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null; }}"'
-                res = subprocess.run(cmd, shell=True, capture_output=True, timeout=12)
-                print_ok = (res.returncode == 0)
-            except Exception:
-                print_ok = False
+            # Silent Word printing of Page 1 only
+            printed, failed, print_err = print_word_documents([final_report_path], page1_only=True)
+            print_ok = (len(printed) == 1 and not failed)
 
             updated_p = get_patient(db_path, p_no)
             self.send_json({
                 "success": True,
-                "message": "报告已保存！" + ("已发送第一页至默认打印机" if print_ok else "已打开打印预览窗口"),
+                "message": "报告已保存，已调用Word发送第1页至默认打印机！" if print_ok else f"报告已保存，但调用Word打印失败: {print_err or '请检查Word及默认打印机'}",
                 "direct_printed": print_ok,
+                "print_error": print_err,
                 "final_report_path": final_report_path,
                 "patient": updated_p
             })
@@ -1081,38 +1229,40 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 })
             return
 
-        # 17. Batch Print Page 1 of Reports in Output List (Requirement 3.1)
+        # 17. Batch Print Page 1 of Reports in Output List (Requirement 3.1 & Print Requirement 1)
         if path == "/api/output/batch_print":
             p_nos = body.get("pathology_nos", [])
             if not p_nos:
                 self.send_error_json("未指定需要打印的报告病理号")
                 return
 
-            printed_list = []
-            failed_list = []
-
+            doc_map = []
+            missing_nos = []
             for p_no in p_nos:
                 patient = get_patient(db_path, p_no)
                 if not patient:
+                    missing_nos.append(p_no)
                     continue
                 word_p = patient.get("final_report_path")
                 if not word_p or not os.path.exists(word_p):
                     diag = patient.get("pathology_diag") or ""
                     word_p = get_final_report_path(work_dir, p_no, patient["name"], diag)
+                if not word_p or not os.path.exists(word_p):
+                    arch_p = patient.get("archive_dir")
+                    if arch_p and os.path.isfile(arch_p) and arch_p.lower().endswith(".docx"):
+                        word_p = arch_p
+                if not word_p or not os.path.exists(word_p):
+                    word_p = patient.get("word_path")
 
                 if word_p and os.path.exists(word_p):
-                    norm_doc = os.path.normpath(word_p).replace("'", "''")
-                    cmd = f'powershell -NoProfile -Command "$w = New-Object -ComObject Word.Application; $w.Visible = $false; $w.DisplayAlerts = 0; try {{ $d = $w.Documents.Open(\'{norm_doc}\'); $d.PrintOut([ref]$false, [ref]$false, [ref]4, [ref]$null, [ref]\'1\', [ref]\'1\'); $d.Close([ref]$false); }} finally {{ $w.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null; }}"'
-                    try:
-                        res = subprocess.run(cmd, shell=True, capture_output=True, timeout=12)
-                        if res.returncode == 0:
-                            printed_list.append(p_no)
-                        else:
-                            failed_list.append(p_no)
-                    except Exception:
-                        failed_list.append(p_no)
+                    doc_map.append((p_no, os.path.normpath(word_p)))
                 else:
-                    failed_list.append(p_no)
+                    missing_nos.append(p_no)
+
+            printed_paths, failed_paths, print_err = print_word_documents([wp for _, wp in doc_map], page1_only=True)
+            printed_set = {os.path.normcase(p) for p in printed_paths}
+            printed_list = [p_no for p_no, wp in doc_map if os.path.normcase(wp) in printed_set]
+            failed_list = [p_no for p_no, wp in doc_map if os.path.normcase(wp) not in printed_set] + missing_nos
 
             direct_ok = (len(printed_list) > 0 and len(failed_list) == 0)
             self.send_json({
@@ -1121,9 +1271,14 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "printed_count": len(printed_list),
                 "failed_count": len(failed_list),
                 "direct_printed": direct_ok,
+                "print_error": print_err,
                 "printed": printed_list,
                 "failed": failed_list,
-                "message": f"批量打印执行完成：已成功提交 {len(printed_list)} 份报告第1页！"
+                "message": (
+                    f"批量Word打印完成：已发送 {len(printed_list)} 份报告第1页至默认打印机！"
+                    if direct_ok else
+                    f"Word打印未完全成功（成功 {len(printed_list)} / 失败 {len(failed_list)}）: {print_err or '请检查Word及默认打印机'}"
+                )
             })
             return
 
@@ -1158,35 +1313,49 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             )
 
             date_range_str = f"{start_date} 至 {end_date}" if (start_date and end_date and start_date != end_date) else (start_date or end_date or datetime.now().strftime("%Y-%m-%d"))
-            html_prev = render_signing_sheet_html(patients, date_range_str=date_range_str)
+            word_custom_name = os.path.splitext(gen_res["filename"])[0] + ".docx"
+            word_res = generate_signing_sheet_word(
+                work_dir,
+                patients,
+                start_date=start_date,
+                end_date=end_date,
+                prefixes=prefixes,
+                custom_filename=word_custom_name,
+                date_range_str=date_range_str
+            )
+            surgery_date_str = word_res.get("surgery_date") or compute_surgery_date_str(start_date=start_date, end_date=end_date, patients=patients)
+            html_prev = render_signing_sheet_html(patients, date_range_str=date_range_str, surgery_date_str=surgery_date_str)
 
             self.send_json({
                 "success": True,
-                "message": f"签名单已生成，包含 {len(patients)} 位患者！",
+                "message": f"签名单（Excel + Word）已生成，包含 {len(patients)} 位患者！",
                 "file_path": gen_res["file_path"],
                 "filename": gen_res["filename"],
+                "word_path": word_res["file_path"],
+                "word_filename": word_res["filename"],
+                "surgery_date": surgery_date_str,
                 "count": len(patients),
                 "html": html_prev
             })
             return
 
-        # 19. Print Signing Sheet (Requirement 3.2)
+        # 19. Print Signing Sheet (Requirement 5.2 & Print Requirement 1: print Word signing sheet)
         if path == "/api/signing/print":
-            f_path = body.get("file_path", "").strip()
-            direct_printed = False
-            if f_path and os.path.exists(f_path):
-                norm_p = os.path.normpath(f_path).replace("'", "''")
-                cmd = f'powershell -NoProfile -Command "$xl = New-Object -ComObject Excel.Application; $xl.Visible = $false; $xl.DisplayAlerts = $false; try {{ $wb = $xl.Workbooks.Open(\'{norm_p}\'); $wb.ActiveSheet.PrintOut(); $wb.Close($false); }} finally {{ $xl.Quit(); [System.Runtime.InteropServices.Marshal]::ReleaseComObject($xl) | Out-Null; }}"'
-                try:
-                    res = subprocess.run(cmd, shell=True, capture_output=True, timeout=12)
-                    direct_printed = (res.returncode == 0)
-                except Exception:
-                    direct_printed = False
+            word_path = body.get("word_path", "").strip()
+            f_path = word_path or body.get("file_path", "").strip()
+            if f_path and f_path.lower().endswith(".xlsx"):
+                candidate_docx = os.path.splitext(f_path)[0] + ".docx"
+                if os.path.exists(candidate_docx):
+                    f_path = candidate_docx
+
+            printed, failed, print_err = print_word_documents([f_path], page1_only=False)
+            direct_printed = (len(printed) == 1 and not failed)
 
             self.send_json({
                 "success": True,
                 "direct_printed": direct_printed,
-                "message": "签名单已发送至默认打印机！" if direct_printed else "已调起打印窗口"
+                "print_error": print_err,
+                "message": "Word签名单已发送至默认打印机！" if direct_printed else f"Word打印失败: {print_err or '请检查Word及默认打印机'}"
             })
             return
 
@@ -1247,8 +1416,12 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             new_no = body.get("pathology_no", old_no).strip().upper()
             new_name = body.get("name", existing["name"]).strip()
+            if new_no != old_no and get_patient(db_path, new_no):
+                conflict = get_patient(db_path, new_no)
+                self.send_error_json(f"无法修改病理号：目标病理号 [{new_no}] 已被患者 [{conflict['name']}] 使用", status=409)
+                return
 
-            # Handle rename of files and folders if no or name changed
+            # Handle rename of files and folders (excluding 已归档报告/)
             rename_res = rename_patient_files_and_folders(
                 work_dir,
                 old_no,
@@ -1259,9 +1432,85 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             body["word_path"] = rename_res["word_path"]
             body["photo_dir"] = rename_res["photo_dir"]
 
-            # Synchronize changes into Word document
+            # Update selected_images paths if photo folder moved
+            old_photo_dir = rename_res.get("old_photo_dir", "")
+            new_photo_dir = rename_res.get("photo_dir", "")
+            selected_images = existing.get("selected_images", [])
+            if old_photo_dir and new_photo_dir and old_photo_dir != new_photo_dir and isinstance(selected_images, list):
+                updated_imgs = []
+                old_norm = os.path.normpath(old_photo_dir)
+                new_norm = os.path.normpath(new_photo_dir)
+                for item in selected_images:
+                    if isinstance(item, dict) and item.get("path"):
+                        item_copy = dict(item)
+                        p_norm = os.path.normpath(item_copy["path"])
+                        if p_norm.startswith(old_norm):
+                            item_copy["path"] = new_norm + p_norm[len(old_norm):]
+                        updated_imgs.append(item_copy)
+                    elif isinstance(item, str):
+                        p_norm = os.path.normpath(item)
+                        updated_imgs.append(new_norm + p_norm[len(old_norm):] if p_norm.startswith(old_norm) else item)
+                    else:
+                        updated_imgs.append(item)
+                selected_images = updated_imgs
+            body["selected_images"] = selected_images
+
+            # Parse updated submission_date if pathology_no changed
+            from app.database import parse_pathology_no
+            parsed_no = parse_pathology_no(new_no)
+            if parsed_no.get("valid"):
+                body.setdefault("submission_date", parsed_no["submission_date"])
+                body.setdefault("submission_date_raw", parsed_no["submission_date_raw"])
+
+            # Synchronize changes into draft Word document (病理报告录入)
             templates_dir = cfg.get("templates_dir")
-            update_report_file(templates_dir, rename_res["word_path"], body)
+            draft_doc_data = dict(existing)
+            draft_doc_data.update(body)
+            update_report_file(templates_dir, rename_res["word_path"], draft_doc_data)
+
+            # Check if patient already has a saved output report or archive
+            was_archived = existing.get("archived") in (1, 2)
+            renamed_final = rename_res.get("final_report_path", "")
+            existing_final = existing.get("final_report_path", "")
+            has_saved_report = bool(renamed_final or (existing_final and os.path.exists(existing_final)) or was_archived)
+
+            target_final_path = ""
+            if has_saved_report:
+                if renamed_final:
+                    target_final_path = renamed_final
+                elif existing_final and os.path.exists(existing_final):
+                    target_final_path = existing_final
+                else:
+                    target_final_path = get_final_report_path(
+                        work_dir,
+                        new_no,
+                        new_name,
+                        existing.get("pathology_diag") or existing.get("clinical_diagnosis") or ""
+                    )
+
+                final_doc_data = dict(existing)
+                final_doc_data.update(body)
+                final_doc_data["selected_images"] = selected_images
+                generate_report_file(templates_dir, target_final_path, final_doc_data)
+                sync_updated_report_to_special_archives(work_dir, final_doc_data, target_final_path)
+                body["final_report_path"] = target_final_path
+            else:
+                sync_updated_report_to_special_archives(work_dir, draft_doc_data, rename_res["word_path"])
+
+            # Determine whether to mark 需要重新归档 and prompt user to re-archive
+            rev_st = str(existing.get("review_status", ""))
+            is_approved = (rev_st == "完成审核")
+            is_still_pending = (not is_approved) and (
+                any(k in rev_st for k in ("待审核", "免疫组化", "重切"))
+                or int(existing.get("is_pending_review", 0)) == 1
+                or int(existing.get("is_needs_ihc", 0)) == 1
+                or int(existing.get("is_needs_recut", 0)) == 1
+            )
+            ask_rearchive = bool(has_saved_report and not is_still_pending)
+            archive_source = "review" if is_approved else "maker"
+
+            if ask_rearchive or was_archived:
+                body["archived"] = 2
 
             # Update database record
             updated = update_patient(db_path, old_no, body)
@@ -1269,6 +1518,8 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             self.send_json({
                 "success": True,
                 "message": f"患者 [{new_name}] 信息及Word文件已成功更新！",
+                "ask_rearchive": ask_rearchive,
+                "archive_source": archive_source,
                 "patient": updated
             })
             return

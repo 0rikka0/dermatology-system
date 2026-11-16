@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS patients (
     final_report_path TEXT DEFAULT '',
     is_pending_review INTEGER DEFAULT 0,
     is_needs_ihc INTEGER DEFAULT 0,
+    is_needs_recut INTEGER DEFAULT 0,
+    send_unit TEXT DEFAULT '本院',
+    department TEXT DEFAULT '皮肤科',
     review_status TEXT DEFAULT '未审核',
     archived INTEGER DEFAULT 0,
     archive_dir TEXT DEFAULT '',
@@ -90,6 +93,9 @@ def init_db(db_path):
             ("final_report_path", "TEXT DEFAULT ''"),
             ("is_pending_review", "INTEGER DEFAULT 0"),
             ("is_needs_ihc", "INTEGER DEFAULT 0"),
+            ("is_needs_recut", "INTEGER DEFAULT 0"),
+            ("send_unit", "TEXT DEFAULT '本院'"),
+            ("department", "TEXT DEFAULT '皮肤科'"),
             ("review_status", "TEXT DEFAULT '未审核'"),
             ("archived", "INTEGER DEFAULT 0"),
             ("archive_dir", "TEXT DEFAULT ''"),
@@ -101,6 +107,17 @@ def init_db(db_path):
                 cursor.execute(f"ALTER TABLE patients ADD COLUMN {col_name} {col_type}")
                 
         conn.commit()
+
+def build_review_status(is_pending=False, is_ihc=False, is_recut=False, fallback="未审核"):
+    """Build combined review_status string from special flags."""
+    parts = []
+    if is_pending:
+        parts.append("待审核")
+    if is_ihc:
+        parts.append("免疫组化")
+    if is_recut:
+        parts.append("重切")
+    return "/".join(parts) if parts else fallback
 
 def patient_row_to_dict(row):
     """Convert SQLite row to dictionary, parsing JSON fields."""
@@ -228,9 +245,10 @@ def insert_patient(db_path, data):
                 submission_date, submission_date_raw, report_date, report_date_raw,
                 report_doctor, review_doctor, word_path, photo_dir,
                 pathology_diag, microscopic_desc, selected_images, final_report_path,
-                is_pending_review, is_needs_ihc, review_status, archived, archive_dir,
+                is_pending_review, is_needs_ihc, is_needs_recut, send_unit, department,
+                review_status, archived, archive_dir,
                 clinical_photo_dir, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             pathology_no,
             parsed["prefix"],
@@ -258,6 +276,9 @@ def insert_patient(db_path, data):
             data.get("final_report_path", "").strip(),
             int(data.get("is_pending_review", 0)),
             int(data.get("is_needs_ihc", 0)),
+            int(data.get("is_needs_recut", 0)),
+            (data.get("send_unit") or "本院").strip() or "本院",
+            (data.get("department") or "皮肤科").strip() or "皮肤科",
             data.get("review_status", "未审核"),
             int(data.get("archived", 0)),
             data.get("archive_dir", "").strip(),
@@ -288,6 +309,22 @@ def update_patient(db_path, old_pathology_no, data):
         else:
             biopsy_sites = []
 
+    existing_old = get_patient(db_path, old_p)
+    selected_images = data.get("selected_images", existing_old.get("selected_images", []) if existing_old else [])
+    if isinstance(selected_images, str):
+        try:
+            selected_images = json.loads(selected_images)
+        except Exception:
+            selected_images = []
+
+    final_report_path = data.get("final_report_path")
+    if final_report_path is None and existing_old:
+        final_report_path = existing_old.get("final_report_path", "")
+
+    archived_val = data.get("archived")
+    if archived_val is None:
+        archived_val = existing_old.get("archived", 0) if existing_old else 0
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -306,10 +343,15 @@ def update_patient(db_path, old_pathology_no, data):
                 medical_history = ?,
                 submission_date = ?,
                 submission_date_raw = ?,
+                send_unit = ?,
+                department = ?,
                 report_doctor = ?,
                 review_doctor = ?,
                 word_path = ?,
                 photo_dir = ?,
+                final_report_path = ?,
+                selected_images = ?,
+                archived = ?,
                 updated_at = ?
             WHERE pathology_no = ?
         """, (
@@ -327,10 +369,15 @@ def update_patient(db_path, old_pathology_no, data):
             data.get("medical_history", "").strip(),
             data.get("submission_date") or parsed["submission_date"],
             data.get("submission_date_raw") or parsed["submission_date_raw"],
+            (data.get("send_unit") or "本院").strip() or "本院",
+            (data.get("department") or "皮肤科").strip() or "皮肤科",
             data.get("report_doctor", "").strip(),
             data.get("review_doctor", "").strip(),
             data.get("word_path", "").strip(),
             data.get("photo_dir", "").strip(),
+            str(final_report_path or "").strip(),
+            json.dumps(selected_images, ensure_ascii=False),
+            int(archived_val),
             now_str,
             old_p
         ))
@@ -355,16 +402,13 @@ def update_patient_report_making(db_path, pathology_no, data):
 
     is_pending = 1 if data.get("is_pending_review") else 0
     is_ihc = 1 if data.get("is_needs_ihc") else 0
-    
+    is_recut = 1 if data.get("is_needs_recut") else 0
+
     # Calculate review_status
-    if is_pending and is_ihc:
-        rev_status = "待审核/免疫组化"
-    elif is_pending:
-        rev_status = "待审核"
-    elif is_ihc:
-        rev_status = "免疫组化"
-    else:
-        rev_status = data.get("review_status", existing.get("review_status", "已制作") if existing else "已制作")
+    fallback_status = data.get("review_status", existing.get("review_status", "已制作") if existing else "已制作")
+    if not (is_pending or is_ihc or is_recut) and existing and existing.get("review_status") in ("待审核", "免疫组化", "重切", "待审核/免疫组化", "待审核/重切", "免疫组化/重切", "待审核/免疫组化/重切"):
+        fallback_status = "未审核"
+    rev_status = build_review_status(is_pending, is_ihc, is_recut, fallback=fallback_status)
 
     selected_images = data.get("selected_images", [])
     if isinstance(selected_images, str):
@@ -372,6 +416,9 @@ def update_patient_report_making(db_path, pathology_no, data):
             selected_images = json.loads(selected_images)
         except Exception:
             selected_images = []
+
+    rep_date = str(data.get("report_date") or "").strip()
+    rep_date_raw = str(data.get("report_date_raw") or "").strip()
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -383,10 +430,13 @@ def update_patient_report_making(db_path, pathology_no, data):
                 final_report_path = ?,
                 is_pending_review = ?,
                 is_needs_ihc = ?,
+                is_needs_recut = ?,
                 review_status = ?,
                 archived = ?,
                 report_doctor = coalesce(nullif(?, ''), report_doctor),
                 review_doctor = coalesce(nullif(?, ''), review_doctor),
+                report_date = coalesce(nullif(?, ''), report_date),
+                report_date_raw = coalesce(nullif(?, ''), report_date_raw),
                 updated_at = ?
             WHERE pathology_no = ?
         """, (
@@ -396,10 +446,13 @@ def update_patient_report_making(db_path, pathology_no, data):
             data.get("final_report_path", "").strip(),
             is_pending,
             is_ihc,
+            is_recut,
             rev_status,
             archived_val,
             data.get("report_doctor", "").strip(),
             data.get("review_doctor", "").strip(),
+            rep_date,
+            rep_date_raw,
             now_str,
             p_no
         ))
@@ -421,6 +474,7 @@ def update_patient_status(db_path, pathology_no, review_status=None, archived=No
 
     is_pending = 1 if "待审核" in new_rev else 0
     is_ihc = 1 if "免疫组化" in new_rev else 0
+    is_recut = 1 if "重切" in new_rev else 0
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -430,9 +484,10 @@ def update_patient_status(db_path, pathology_no, review_status=None, archived=No
                 archived = ?,
                 is_pending_review = ?,
                 is_needs_ihc = ?,
+                is_needs_recut = ?,
                 updated_at = ?
             WHERE pathology_no = ?
-        """, (new_rev, new_arch, is_pending, is_ihc, now_str, p_no))
+        """, (new_rev, new_arch, is_pending, is_ihc, is_recut, now_str, p_no))
         conn.commit()
     return get_patient(db_path, p_no)
 
@@ -512,7 +567,7 @@ def get_patients_for_report_making(db_path, date_raw=None, keyword=None):
     sql = "SELECT * FROM patients"
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
-    sql += " ORDER BY created_at DESC, pathology_no DESC LIMIT 200"
+    sql += " ORDER BY pathology_no ASC LIMIT 200"
 
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
@@ -530,13 +585,16 @@ def get_patients_for_review(db_path, include_approved=False):
         if include_approved:
             cursor.execute("""
                 SELECT * FROM patients
-                WHERE is_pending_review = 1 OR is_needs_ihc = 1 OR review_status IN ('待审核', '免疫组化', '待审核/免疫组化', '完成审核')
+                WHERE is_pending_review = 1 OR is_needs_ihc = 1 OR is_needs_recut = 1
+                   OR review_status LIKE '%待审核%' OR review_status LIKE '%免疫组化%' OR review_status LIKE '%重切%'
+                   OR review_status = '完成审核'
                 ORDER BY updated_at DESC, pathology_no DESC
             """)
         else:
             cursor.execute("""
                 SELECT * FROM patients
-                WHERE (is_pending_review = 1 OR is_needs_ihc = 1 OR review_status IN ('待审核', '免疫组化', '待审核/免疫组化'))
+                WHERE (is_pending_review = 1 OR is_needs_ihc = 1 OR is_needs_recut = 1
+                   OR review_status LIKE '%待审核%' OR review_status LIKE '%免疫组化%' OR review_status LIKE '%重切%')
                   AND review_status != '完成审核'
                 ORDER BY updated_at DESC, pathology_no DESC
             """)
@@ -548,10 +606,10 @@ def search_patients(db_path, query_params):
     conditions = []
     values = []
 
-    # 1. Date range filter
+    # 1. Date range filter (by submission date)
     start_date = query_params.get("start_date", "").strip()
     end_date = query_params.get("end_date", "").strip()
-    date_field = "COALESCE(NULLIF(report_date_raw, ''), NULLIF(submission_date_raw, ''), substr(created_at, 1, 10))"
+    date_field = "COALESCE(NULLIF(submission_date_raw, ''), NULLIF(report_date_raw, ''), substr(created_at, 1, 10))"
     if start_date and end_date:
         conditions.append(f"({date_field} BETWEEN ? AND ?)")
         values.extend([start_date, end_date])
@@ -589,6 +647,8 @@ def search_patients(db_path, query_params):
             conditions.append("(review_status LIKE '%待审核%')")
         elif rev_status == "免疫组化":
             conditions.append("(review_status LIKE '%免疫组化%')")
+        elif rev_status == "重切":
+            conditions.append("(review_status LIKE '%重切%')")
         elif rev_status == "完成审核":
             conditions.append("review_status = '完成审核'")
         else:
@@ -644,7 +704,8 @@ def get_output_regular_patients(db_path, prefix=None, today_only=False, today_st
         "archived IN (1, 2)",
         "is_pending_review = 0",
         "is_needs_ihc = 0",
-        "(review_status IS NULL OR review_status IN ('', '无', '未审核'))"
+        "is_needs_recut = 0",
+        "(review_status IS NULL OR review_status IN ('', '无', '未审核', '已制作'))"
     ]
     values = []
 
@@ -722,8 +783,9 @@ def revoke_patient_approval_db(db_path, pathology_no):
         return None
 
     is_ihc = (existing.get("is_needs_ihc") == 1)
+    is_recut = (existing.get("is_needs_recut") == 1)
     is_pending = 1
-    new_status = "待审核/免疫组化" if is_ihc else "待审核"
+    new_status = build_review_status(True, is_ihc, is_recut, fallback="待审核")
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_connection(db_path) as conn:

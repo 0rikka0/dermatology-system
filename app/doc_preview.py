@@ -62,7 +62,7 @@ def render_preview_html(patient_data, doc_path=None):
     name = html.escape(str(patient_data.get("name", "")))
     gender = html.escape(str(patient_data.get("gender", "")))
     age = html.escape(str(patient_data.get("age", "")))
-    if age and not age.endswith("岁") and not age.endswith("月") and not age.endswith("天"):
+    if age and not age.endswith(("岁", "月", "日", "天")):
         age += "岁"
     pathology_no = html.escape(str(patient_data.get("pathology_no", "")))
     sub_date = html.escape(str(patient_data.get("submission_date", "")))
@@ -76,6 +76,8 @@ def render_preview_html(patient_data, doc_path=None):
     if isinstance(biopsy_sites, str):
         biopsy_sites = [s.strip() for s in biopsy_sites.split(";") if s.strip()]
         
+    send_unit = html.escape(str(patient_data.get("send_unit") or "本院"))
+    department = html.escape(str(patient_data.get("department") or "皮肤科"))
     rep_doc = html.escape(str(patient_data.get("report_doctor", "")))
     rev_doc = html.escape(str(patient_data.get("review_doctor", "")))
     rep_date = html.escape(str(patient_data.get("report_date", "")))
@@ -202,8 +204,8 @@ def render_preview_html(patient_data, doc_path=None):
                         <td class="table-cell w-25"><strong>病理号：</strong>{pathology_no}</td>
                     </tr>
                     <tr>
-                        <td class="table-cell"><strong>送检单位：</strong>本院</td>
-                        <td class="table-cell"><strong>科室：</strong>皮肤科</td>
+                        <td class="table-cell"><strong>送检单位：</strong>{send_unit}</td>
+                        <td class="table-cell"><strong>科室：</strong>{department}</td>
                         <td colspan="2" class="table-cell"><strong>送检日期：</strong>{sub_date}</td>
                     </tr>
                     <tr>
