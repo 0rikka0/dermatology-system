@@ -54,7 +54,7 @@ def run_tests():
         init_db(db_path)
         print("✓ 工作目录与数据库初始化通过")
 
-        # 1. 准备4位测试患者 (覆盖普通号、L陆港号、B病房号、T特殊号，以及常规vs待审组化)
+        # 1. 准备4位测试患者 (覆盖普通号、L分院号、B病房号、T特殊号，以及常规vs待审组化)
         p1_data = {
             "pathology_no": "2026110301",
             "prefix": "",
@@ -76,7 +76,7 @@ def run_tests():
         p2_data = {
             "pathology_no": "L2026110301",
             "prefix": "L",
-            "name": "陆港李",
+            "name": "分院李",
             "gender": "女",
             "age": "42",
             "clinical_diagnosis": "脂溢性角化",
@@ -154,7 +154,7 @@ def run_tests():
 
         # ---------------- TEST 3.1: 报告输出工作区双列表与前缀过滤 ----------------
         print("\n[TEST 3.1] 验证报告输出工作区列表与前缀过滤...")
-        # 列表1: 常规已归档报告 (应有 p1 普通张 和 p2 陆港李)
+        # 列表1: 常规已归档报告 (应有 p1 普通张 和 p2 分院李)
         reg_all = get_output_regular_patients(db_path, prefix="ALL")
         assert len(reg_all) == 2, f"常规报告列表总数应为2，实际为: {len(reg_all)}"
         reg_nos = [p["pathology_no"] for p in reg_all]
@@ -165,7 +165,7 @@ def run_tests():
         reg_none = get_output_regular_patients(db_path, prefix="NONE")
         assert len(reg_none) == 1 and reg_none[0]["pathology_no"] == "2026110301", "仅普通筛选异常"
         reg_l = get_output_regular_patients(db_path, prefix="L")
-        assert len(reg_l) == 1 and reg_l[0]["pathology_no"] == "L2026110301", "仅陆港(L)筛选异常"
+        assert len(reg_l) == 1 and reg_l[0]["pathology_no"] == "L2026110301", "仅分院(L)筛选异常"
         reg_b = get_output_regular_patients(db_path, prefix="B")
         assert len(reg_b) == 0, "B病房常规报告应为空"
         print("  -> 常规报告前缀过滤 (ALL, NONE, L, B) 验证通过！")
@@ -221,12 +221,12 @@ def run_tests():
         assert len(date_filtered) == 3, f"11月3日报告应有3人，实际为: {len(date_filtered)}"
         print("  -> 时间范围筛选 (起始~结束) 验证通过！")
 
-        # 多前缀复选框组合筛选 (如同时选 [普通, 陆港(L)])
+        # 多前缀复选框组合筛选 (如同时选 [普通, 分院(L)])
         multi_pfx = get_patients_for_signing_sheet(db_path, prefixes=["NONE", "L"])
         assert len(multi_pfx) == 2
         multi_pfx_nos = [p["pathology_no"] for p in multi_pfx]
         assert "2026110301" in multi_pfx_nos and "L2026110301" in multi_pfx_nos
-        print("  -> 多前缀复选组合筛选 (普通 + 陆港) 验证通过！")
+        print("  -> 多前缀复选组合筛选 (普通 + 分院) 验证通过！")
 
         # ---------------- TEST 3.2.1: Excel 签名单生成与格式校验 ----------------
         print("\n[TEST 3.2.1] 验证 Excel 签名单生成与格式规范...")

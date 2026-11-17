@@ -173,13 +173,13 @@ def run_tests():
         assert p_db["review_status"] == "待审核/免疫组化"
         print(f"✓ 报告制作与保存成功: {os.path.basename(final_doc_path)}")
 
-        # 保存时自动放入特殊患者归档 (待审核与免疫组化两个目录)
+        # 保存时仅自动放入 待审核/重切 目录（不再自动创建 特殊患者归档/免疫组化）
         save_special_draft_queue(test_dir, p_db, final_doc_path)
         safe_name = f"2026110301_张三_{diag_formatted}"
         pending_arch = os.path.join(test_dir, "特殊患者归档", "待审核", safe_name)
         ihc_arch = os.path.join(test_dir, "特殊患者归档", "免疫组化", safe_name)
         assert os.path.exists(pending_arch), "待审核特殊归档缺失"
-        assert os.path.exists(ihc_arch), "免疫组化特殊归档缺失"
+        assert not os.path.exists(ihc_arch), "保存草稿不应再自动创建免疫组化目录"
 
         # 制作区直接归档应被禁止 (Requirement 3)
         block_res = archive_patient_report(test_dir, p_db, final_doc_path, is_from_review=False)
@@ -202,14 +202,14 @@ def run_tests():
         assert os.path.exists(main_arch_file)
         assert os.path.basename(main_arch_file) == f"{safe_name}.docx"
 
-        # 验证特殊患者归档保留完整包结构（包含照片）
+        # 验证特殊患者归档保留病理照片与报告草稿（不再复制临床照片）
         spec_arch = os.path.join(test_dir, "特殊患者归档", "完成审核", safe_name)
         assert os.path.exists(spec_arch)
-        assert os.path.exists(os.path.join(spec_arch, "临床照片", "clinical_front.jpg"))
+        assert not os.path.exists(os.path.join(spec_arch, "临床照片"))
         assert os.path.exists(os.path.join(spec_arch, "病理照片", "1.2.交界痣.jpg"))
         assert any(f.endswith(".docx") for f in os.listdir(spec_arch))
 
-        # 验证从待审核/免疫组化中取出，放入完成审核
+        # 验证从待审核中取出，放入完成审核
         assert not os.path.exists(pending_arch)
         assert not os.path.exists(ihc_arch)
         
@@ -218,11 +218,12 @@ def run_tests():
         assert p_arch["archived"] == 1
         print(f"✓ 档案打包归档及特殊患者同步归档成功: {main_arch_file}")
 
-        # 同步覆盖验证
+        # 同步草稿验证（仅同步特殊患者归档草稿，不直接改动已归档报告）
         sync_res = sync_review_overwrites(test_dir, p_arch, final_doc_path)
         assert sync_res["success"] is True
-        assert len(sync_res["overwritten"]) >= 2
-        print(f"✓ 审核修改保存并自动覆盖各归档目录: 共覆盖 {len(sync_res['overwritten'])} 处")
+        assert len(sync_res["overwritten"]) >= 1
+        assert all("已归档报告" not in p for p in sync_res["overwritten"])
+        print(f"✓ 审核修改保存并同步特殊归档草稿目录: 共同步 {len(sync_res['overwritten'])} 处")
 
         # 验证覆盖后文件中医生名称
         doc_overwritten = docx.Document(final_doc_path)

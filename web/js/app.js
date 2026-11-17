@@ -55,6 +55,13 @@ function startApp() {
   const todayCountBadge = document.getElementById("today-count-badge");
   const todayPatientList = document.getElementById("today-patient-list");
   const btnRefreshToday = document.getElementById("btn-refresh-today");
+  const entryFilterReportDate = document.getElementById("entry-filter-report-date");
+  const btnEntryReportToday = document.getElementById("btn-entry-report-today");
+  const btnEntryReportAll = document.getElementById("btn-entry-report-all");
+  const entryFilterSubDate = document.getElementById("entry-filter-sub-date");
+  const btnEntrySubAll = document.getElementById("btn-entry-sub-all");
+  const entryFilterKeyword = document.getElementById("entry-filter-keyword");
+  const btnEntrySearch = document.getElementById("btn-entry-search");
   const selectedPatientBox = document.getElementById("selected-patient-box");
   const selectedPatientTitle = document.getElementById("selected-patient-title");
   const selectedPatientDiagBadge = document.getElementById("selected-patient-diag-badge");
@@ -106,6 +113,117 @@ function startApp() {
   const toastContainer = document.getElementById("toast-container");
 
   // ================= Shared Helpers =================
+  function formatLocalIsoDate(d = new Date()) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  function getTodayDateStr() {
+    return (state && state.config && state.config.today) ? state.config.today : formatLocalIsoDate();
+  }
+
+  function bindSidebarListFilter({
+    reportDateEl, btnReportTodayEl, btnReportAllEl,
+    subDateEl, btnSubAllEl, keywordEl, btnSearchEl, onReload
+  }) {
+    if (reportDateEl) reportDateEl.addEventListener("change", onReload);
+    if (subDateEl) subDateEl.addEventListener("change", onReload);
+    if (btnReportTodayEl && reportDateEl) {
+      btnReportTodayEl.addEventListener("click", () => {
+        reportDateEl.value = getTodayDateStr();
+        onReload();
+      });
+    }
+    if (btnReportAllEl && reportDateEl) {
+      btnReportAllEl.addEventListener("click", () => {
+        reportDateEl.value = "";
+        onReload();
+      });
+    }
+    if (btnSubAllEl && subDateEl) {
+      btnSubAllEl.addEventListener("click", () => {
+        subDateEl.value = "";
+        onReload();
+      });
+    }
+    if (btnSearchEl) {
+      btnSearchEl.addEventListener("click", onReload);
+    }
+    if (keywordEl) {
+      keywordEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onReload();
+        }
+      });
+    }
+  }
+
+  function getPrefixGroupParam(allChkEl, itemChkNodes) {
+    if (allChkEl && allChkEl.checked) return "ALL";
+    const sel = Array.from(itemChkNodes || []).filter(c => c.checked).map(c => c.value);
+    return sel.length ? sel.join(",") : "__EMPTY__";
+  }
+
+  function bindPrefixCheckboxGroup(allChkEl, itemChkNodes, onChange) {
+    if (allChkEl) {
+      allChkEl.addEventListener("change", () => {
+        Array.from(itemChkNodes || []).forEach(chk => chk.checked = allChkEl.checked);
+        if (onChange) onChange();
+      });
+    }
+    Array.from(itemChkNodes || []).forEach(chk => {
+      chk.addEventListener("change", () => {
+        if (allChkEl) {
+          allChkEl.checked = Array.from(itemChkNodes || []).every(c => c.checked);
+        }
+        if (onChange) onChange();
+      });
+    });
+  }
+
+  function bindRangeQuickDateButtons({ startEl, endEl, btnTodayEl, btnWeekEl, btnMonthEl, btnAllEl, onReload }) {
+    if (startEl) startEl.addEventListener("change", onReload);
+    if (endEl) endEl.addEventListener("change", onReload);
+    if (btnTodayEl) {
+      btnTodayEl.addEventListener("click", () => {
+        const today = getTodayDateStr();
+        if (startEl) startEl.value = today;
+        if (endEl) endEl.value = today;
+        onReload();
+      });
+    }
+    if (btnWeekEl) {
+      btnWeekEl.addEventListener("click", () => {
+        const now = new Date();
+        const day = now.getDay() || 7;
+        const monday = new Date(now);
+        monday.setDate(now.getDate() - day + 1);
+        if (startEl) startEl.value = formatLocalIsoDate(monday);
+        if (endEl) endEl.value = formatLocalIsoDate(now);
+        onReload();
+      });
+    }
+    if (btnMonthEl) {
+      btnMonthEl.addEventListener("click", () => {
+        const now = new Date();
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+        if (startEl) startEl.value = formatLocalIsoDate(firstDay);
+        if (endEl) endEl.value = formatLocalIsoDate(now);
+        onReload();
+      });
+    }
+    if (btnAllEl) {
+      btnAllEl.addEventListener("click", () => {
+        if (startEl) startEl.value = "";
+        if (endEl) endEl.value = "";
+        onReload();
+      });
+    }
+  }
+
   function formatAgeDisplay(age) {
     const raw = String(age || "").trim();
     if (!raw) return "-";
@@ -173,7 +291,11 @@ function startApp() {
   function renderReviewStatusBadges(p) {
     const rev = String(p.review_status || "");
     if (rev === "完成审核") {
-      return `<span class="badge-status badge-approved">完成审核</span>`;
+      let html = `<span class="badge-status badge-approved">完成审核</span>`;
+      if (p.is_needs_ihc === 1) {
+        html += `<span class="badge-status badge-ihc">免疫组化</span>`;
+      }
+      return html;
     }
     let html = "";
     if (p.is_pending_review === 1 || rev.includes("待审核")) {
@@ -236,6 +358,18 @@ function startApp() {
     }, 3200);
   }
 
+  function findMatchingPhoto(photosList, pPath) {
+    if (!pPath || !Array.isArray(photosList) || !photosList.length) return null;
+    let hit = photosList.find(ph => ph.path === pPath);
+    if (!hit) {
+      const baseName = String(pPath).split(/[/\\]/).pop().toLowerCase();
+      if (baseName) {
+        hit = photosList.find(ph => (ph.filename || "").toLowerCase() === baseName);
+      }
+    }
+    return hit || null;
+  }
+
   // ================= Clipboard Helper =================
   async function copyToClipboard(text, successMsg = "路径已成功复制到剪贴板！") {
     if (!text || text === "-") return;
@@ -270,21 +404,27 @@ function startApp() {
       const targetPanel = document.getElementById(targetId);
       if (targetPanel) targetPanel.classList.add("active");
 
-      if (targetId === "tab-search") {
+      if (targetId === "tab-entry") {
+        loadTodayPatients();
+      } else if (targetId === "tab-search") {
         // 默认送检日期为今日
         if (searchStartDateInput && !searchStartDateInput.value && !searchEndDateInput.value) {
-          const today = new Date().toISOString().split("T")[0];
+          const today = getTodayDateStr();
           searchStartDateInput.value = today;
           searchEndDateInput.value = today;
         }
         doSearch();
       } else if (targetId === "tab-making") {
-        loadMakingPatients();
+        initMakingDefaultDates();
+        loadMakingPatients(true);
       } else if (targetId === "tab-review") {
-        loadReviewPatients();
+        loadReviewPatients(true);
+      } else if (targetId === "tab-ihc") {
+        loadIhcPatients();
       } else if (targetId === "tab-output") {
         loadOutputRegularPatients();
         loadOutputSpecialPatients();
+        loadOutputIhcPatients();
       } else if (targetId === "tab-signing") {
         initSigningDateRange();
         loadSigningCandidates();
@@ -319,8 +459,13 @@ function startApp() {
         settingReviewDoc.value = data.review_doctor || "";
 
         // Default date to today
-        const todayStr = data.today || new Date().toISOString().split("T")[0];
+        const todayStr = data.today || formatLocalIsoDate();
         pathologyDate.value = todayStr;
+        if (entryFilterReportDate && !state.entryDefaultsInitialized) {
+          entryFilterReportDate.value = todayStr;
+          state.entryDefaultsInitialized = true;
+        }
+        initMakingDefaultDates();
 
         // Auto generate first sequence number if pathology no is empty
         if (!pathologyNoInput.value) {
@@ -452,7 +597,7 @@ function startApp() {
     }
 
     const [_, prefix, y, m, d, seq] = match;
-    const prefixNameMap = { "": "门诊/普通", "B": "病房", "L": "陆港院区", "H": "会诊", "T": "特殊" };
+    const prefixNameMap = { "": "门诊/普通", "B": "病房", "L": "分院区", "H": "会诊", "T": "特殊" };
     const dateDesc = `${y}年${parseInt(m, 10)}月${parseInt(d, 10)}日`;
     const prefixDesc = prefixNameMap[prefix] || prefix;
 
@@ -644,8 +789,20 @@ function startApp() {
           }
         }
 
+        const wasEditMode = state.isEditMode;
+        const inheritPrefix = (!wasEditMode && savedPatient && savedPatient.prefix !== undefined)
+          ? (savedPatient.prefix || "")
+          : (!wasEditMode ? (pathologyPrefix.value || "") : undefined);
+        const inheritSubDate = (!wasEditMode && savedPatient && savedPatient.submission_date_raw)
+          ? savedPatient.submission_date_raw
+          : (!wasEditMode ? (pathologyDate.value || "") : undefined);
+
         exitEditMode();
-        resetPatientForm();
+        if (!wasEditMode) {
+          resetPatientForm({ inheritPrefix, inheritSubDate });
+        } else {
+          resetPatientForm();
+        }
         await loadTodayPatients();
         if (makingState && makingState.patients) {
           loadMakingPatients();
@@ -663,19 +820,23 @@ function startApp() {
   });
 
   // ================= Reset & Exit Edit =================
-  function resetPatientForm() {
+  function resetPatientForm(options = {}) {
+    const opts = options && typeof options === "object" ? options : {};
+    const targetPrefix = opts.inheritPrefix !== undefined ? String(opts.inheritPrefix || "") : "";
+    const targetDate = opts.inheritSubDate || getTodayDateStr();
+
     patientForm.reset();
     editOldPathologyNoInput.value = "";
-    pathologyPrefix.value = "";
+    pathologyPrefix.value = targetPrefix;
     if (patientAgeUnitSelect) patientAgeUnitSelect.value = "岁";
     patientAgeInput.placeholder = "如 45";
-    syncUnitDeptEditable("");
-    pathologyDate.value = state.config.today || new Date().toISOString().split("T")[0];
+    syncUnitDeptEditable(targetPrefix);
+    pathologyDate.value = targetDate;
     setImageCount(1);
     fetchNextPathologyNo();
   }
 
-  btnResetForm.addEventListener("click", resetPatientForm);
+  btnResetForm.addEventListener("click", () => resetPatientForm());
 
   function enterEditMode(patient) {
     state.isEditMode = true;
@@ -724,10 +885,19 @@ function startApp() {
     resetPatientForm();
   });
 
-  // ================= Load Today's Patients =================
+  // ================= Load Entry Patient List =================
   async function loadTodayPatients() {
     try {
-      const res = await fetch("/api/patients/today");
+      const params = new URLSearchParams();
+      params.set("filter_mode", "1");
+      params.set("report_date", entryFilterReportDate ? entryFilterReportDate.value : getTodayDateStr());
+      if (entryFilterSubDate && entryFilterSubDate.value) {
+        params.set("submission_date", entryFilterSubDate.value);
+      }
+      if (entryFilterKeyword && entryFilterKeyword.value.trim()) {
+        params.set("keyword", entryFilterKeyword.value.trim());
+      }
+      const res = await fetch(`/api/patients/today?${params.toString()}`);
       const data = await res.json();
       if (data.success) {
         state.todayPatients = data.patients || [];
@@ -739,13 +909,23 @@ function startApp() {
   }
 
   btnRefreshToday.addEventListener("click", loadTodayPatients);
+  bindSidebarListFilter({
+    reportDateEl: entryFilterReportDate,
+    btnReportTodayEl: btnEntryReportToday,
+    btnReportAllEl: btnEntryReportAll,
+    subDateEl: entryFilterSubDate,
+    btnSubAllEl: btnEntrySubAll,
+    keywordEl: entryFilterKeyword,
+    btnSearchEl: btnEntrySearch,
+    onReload: loadTodayPatients
+  });
 
   function renderTodayPatientList(patients) {
     todayCountBadge.textContent = `${patients.length} 人`;
     todayPatientList.innerHTML = "";
 
     if (patients.length === 0) {
-      todayPatientList.innerHTML = `<div class="patient-list-empty">今日尚未录入患者</div>`;
+      todayPatientList.innerHTML = `<div class="patient-list-empty">暂无符合条件的患者记录</div>`;
       selectedPatientBox.style.display = "none";
       return;
     }
@@ -881,15 +1061,18 @@ function startApp() {
   });
 
   // ================= A4 Word Report Preview Modal =================
-  async function openReportPreviewModal(pathologyNo) {
+  async function openReportPreviewModal(pathologyNo, kind = "normal") {
     try {
       reportPreviewBody.innerHTML = `<div style="text-align: center; padding: 60px; color: #666;">正在加载报告预览...</div>`;
       reportPreviewModal.style.display = "flex";
 
-      const res = await fetch(`/api/patients/${encodeURIComponent(pathologyNo)}/preview`);
+      const url = kind === "ihc"
+        ? `/api/ihc/${encodeURIComponent(pathologyNo)}/preview`
+        : `/api/patients/${encodeURIComponent(pathologyNo)}/preview`;
+      const res = await fetch(url);
       const data = await res.json();
       if (data.success) {
-        const reportPath = data.patient.final_report_path || data.patient.word_path;
+        const reportPath = data.doc_path || data.patient.final_report_path || data.patient.word_path;
         modalPreviewFilename.textContent = reportPath ? reportPath.split(/[\\/]/).pop() : `${data.patient.pathology_no}_${data.patient.name}.docx`;
         reportPreviewBody.innerHTML = data.html;
 
@@ -1297,12 +1480,15 @@ function startApp() {
     photos: [],
     slots: [], // [{slot: 1, site: "...", photo: photoObj|null}]
     imageCount: 1,
-    recommendedTemplates: []
+    recommendedTemplates: [],
+    defaultsInitialized: false
   };
 
   const makingFilterDate = document.getElementById("making-filter-date");
   const btnMakingToday = document.getElementById("btn-making-today");
   const btnMakingAllDates = document.getElementById("btn-making-all-dates");
+  const makingFilterSubDate = document.getElementById("making-filter-sub-date");
+  const btnMakingSubAll = document.getElementById("btn-making-sub-all");
   const makingFilterKeyword = document.getElementById("making-filter-keyword");
   const btnMakingSearch = document.getElementById("btn-making-search");
   const btnRefreshMaking = document.getElementById("btn-refresh-making");
@@ -1349,13 +1535,23 @@ function startApp() {
   const btnMkSaveReport = document.getElementById("btn-mk-save-report");
   const btnMkArchiveReport = document.getElementById("btn-mk-archive-report");
 
+  function initMakingDefaultDates() {
+    if (!makingState.defaultsInitialized && makingFilterDate) {
+      makingFilterDate.value = getTodayDateStr();
+      makingState.defaultsInitialized = true;
+    }
+  }
+
   // Load patients for Report Making
-  async function loadMakingPatients() {
+  async function loadMakingPatients(reloadSelectedPhotos = false) {
     try {
-      const dateVal = makingFilterDate.value || "";
+      initMakingDefaultDates();
+      const repDateVal = makingFilterDate ? (makingFilterDate.value || "") : "";
+      const subDateVal = makingFilterSubDate ? (makingFilterSubDate.value || "") : "";
       const kwVal = makingFilterKeyword.value.trim();
       const params = new URLSearchParams();
-      if (dateVal) params.set("date", dateVal);
+      if (repDateVal) params.set("report_date", repDateVal);
+      if (subDateVal) params.set("submission_date", subDateVal);
       if (kwVal) params.set("keyword", kwVal);
 
       makingPatientList.innerHTML = `<div class="patient-list-empty">正在加载报告列表...</div>`;
@@ -1371,7 +1567,7 @@ function startApp() {
         if (makingState.selectedPatient) {
           const found = data.patients.find(p => p.pathology_no === makingState.selectedPatient.pathology_no);
           if (found) {
-            selectMakingPatient(found, false);
+            selectMakingPatient(found, reloadSelectedPhotos);
           }
         }
       } else {
@@ -1398,8 +1594,10 @@ function startApp() {
       const isApprovedArchived = (p.review_status === "完成审核" && p.archived === 1);
       const isApprovedUnarchived = (p.review_status === "完成审核" && p.archived !== 1);
 
-      // 完成审核已归档采用普通已归档报告形式；完成审核未归档给出“需重新归档”提示
-      const statusBadge = isApprovedArchived ? "" : renderReviewStatusBadges(p);
+      // 完成审核已归档采用普通已归档报告形式（保留免疫组化标签）；完成审核未归档给出“需重新归档”提示
+      const statusBadge = isApprovedArchived
+        ? (p.is_needs_ihc === 1 ? `<span class="badge-status badge-ihc">免疫组化</span>` : "")
+        : renderReviewStatusBadges(p);
 
       let archBadge = "";
       if (p.archived === 1) {
@@ -1600,7 +1798,7 @@ function startApp() {
 
         if (item) {
           const pPath = typeof item === "object" ? item.path : item;
-          matchedPhoto = makingState.photos.find(ph => ph.path === pPath);
+          matchedPhoto = findMatchingPhoto(makingState.photos, pPath);
         }
       }
 
@@ -1850,14 +2048,13 @@ function startApp() {
     if (!makingState.selectedPatient) return;
     const p = makingState.selectedPatient;
 
-    // Check prohibition for 待审核, 免疫组化 and 重切 (unless already 完成审核)
-    const isApproved = (p.review_status === "完成审核") && !mkIsPendingReview.checked;
+    // Check prohibition for 待审核 and 重切 (unless already 完成审核; IHC-only follows regular archiving)
+    const isApproved = (p.review_status === "完成审核") && !mkIsPendingReview.checked && !(mkIsNeedsRecut && mkIsNeedsRecut.checked);
     const isPending = mkIsPendingReview.checked || (!isApproved && (p.is_pending_review == 1 || (p.review_status && p.review_status.includes("待审核"))));
-    const isIhc = (!isApproved && (mkIsNeedsIhc.checked || p.is_needs_ihc == 1 || (p.review_status && p.review_status.includes("免疫组化"))));
     const isRecut = (!isApproved && ((mkIsNeedsRecut && mkIsNeedsRecut.checked) || p.is_needs_recut == 1 || (p.review_status && p.review_status.includes("重切"))));
 
-    if (isPending || isIhc || isRecut) {
-      alert("⚠️ 【禁止直接归档】\n\n该报告已被标记为【待审核 / 免疫组化 / 重切】！\n在点击保存时，系统已自动将其放入【特殊患者归档】待审队列。\n\n操作指引：请移步【报告审核】工作区由上级医生完成专家审核后，方可进行归档。");
+    if (isPending || isRecut) {
+      alert("⚠️ 【禁止直接归档】\n\n该报告已被标记为【待审核 / 重切】！\n在点击保存时，系统已自动将其放入【特殊患者归档】待审队列。\n\n操作指引：请移步【报告审核】工作区由上级医生完成专家审核后，方可进行归档。");
       return;
     }
 
@@ -2013,29 +2210,19 @@ function startApp() {
   });
 
   // Date and filter buttons
-  btnMakingToday.addEventListener("click", () => {
-    makingFilterDate.value = new Date().toISOString().split("T")[0];
-    loadMakingPatients();
-  });
-
-  btnMakingAllDates.addEventListener("click", () => {
-    makingFilterDate.value = "";
-    loadMakingPatients();
-  });
-
-  btnMakingSearch.addEventListener("click", () => {
-    loadMakingPatients();
-  });
-
-  makingFilterKeyword.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      loadMakingPatients();
-    }
+  bindSidebarListFilter({
+    reportDateEl: makingFilterDate,
+    btnReportTodayEl: btnMakingToday,
+    btnReportAllEl: btnMakingAllDates,
+    subDateEl: makingFilterSubDate,
+    btnSubAllEl: btnMakingSubAll,
+    keywordEl: makingFilterKeyword,
+    btnSearchEl: btnMakingSearch,
+    onReload: loadMakingPatients
   });
 
   btnRefreshMaking.addEventListener("click", () => {
-    loadMakingPatients();
+    loadMakingPatients(true);
   });
 
   // ==========================================================
@@ -2045,13 +2232,20 @@ function startApp() {
     patients: [],
     selectedPatient: null,
     photos: [],
-    slots: []
+    slots: [],
+    reviewPhotoDir: ""
   };
 
   const reviewCountBadge = document.getElementById("review-count-badge");
   const btnRefreshReview = document.getElementById("btn-refresh-review");
   const reviewShowApprovedToggle = document.getElementById("review-show-approved-toggle");
+  const reviewFilterReportDate = document.getElementById("review-filter-report-date");
+  const btnReviewReportToday = document.getElementById("btn-review-report-today");
+  const btnReviewReportAll = document.getElementById("btn-review-report-all");
+  const reviewFilterSubDate = document.getElementById("review-filter-sub-date");
+  const btnReviewSubAll = document.getElementById("btn-review-sub-all");
   const reviewFilterKeyword = document.getElementById("review-filter-keyword");
+  const btnReviewSearch = document.getElementById("btn-review-search");
   const reviewPatientList = document.getElementById("review-patient-list");
 
   const reviewEmptyHint = document.getElementById("review-empty-hint");
@@ -2064,6 +2258,11 @@ function startApp() {
 
   const btnRevFindClinical = document.getElementById("btn-rev-find-clinical");
   const btnRevOpenPhotoDir = document.getElementById("btn-rev-open-photo-dir");
+  const btnRevCopyPhotoPath = document.getElementById("btn-rev-copy-photo-path");
+  const revPhotoPathBox = document.getElementById("rev-photo-path-box");
+  const revPhotoPathText = document.getElementById("rev-photo-path-text");
+  const btnRevOpenPhotoDir2 = document.getElementById("btn-rev-open-photo-dir-2");
+  const btnRevCopyPhotoPath2 = document.getElementById("btn-rev-copy-photo-path-2");
 
   const revReportDoc = document.getElementById("rev-report-doc");
   const revReviewDoc = document.getElementById("rev-review-doc");
@@ -2085,21 +2284,27 @@ function startApp() {
   const btnRevApprove = document.getElementById("btn-rev-approve");
 
   // Load review patients
-  async function loadReviewPatients() {
+  async function loadReviewPatients(reloadSelectedPhotos = false) {
     try {
       const includeApproved = reviewShowApprovedToggle.checked ? "1" : "0";
+      const params = new URLSearchParams();
+      params.set("include_approved", includeApproved);
+      if (reviewFilterReportDate && reviewFilterReportDate.value) {
+        params.set("report_date", reviewFilterReportDate.value);
+      }
+      if (reviewFilterSubDate && reviewFilterSubDate.value) {
+        params.set("submission_date", reviewFilterSubDate.value);
+      }
+      if (reviewFilterKeyword && reviewFilterKeyword.value.trim()) {
+        params.set("keyword", reviewFilterKeyword.value.trim());
+      }
       reviewPatientList.innerHTML = `<div class="patient-list-empty">正在加载待审核数据...</div>`;
 
-      const res = await fetch(`/api/reviews/list?include_approved=${includeApproved}`);
+      const res = await fetch(`/api/reviews/list?${params.toString()}`);
       const data = await res.json();
 
       if (data.success) {
-        let list = data.patients || [];
-        const kw = reviewFilterKeyword.value.trim().toLowerCase();
-        if (kw) {
-          list = list.filter(p => p.name.toLowerCase().includes(kw) || p.pathology_no.toLowerCase().includes(kw));
-        }
-
+        const list = data.patients || [];
         reviewState.patients = list;
         reviewCountBadge.textContent = `${list.length} 人`;
         renderReviewPatientList();
@@ -2107,7 +2312,7 @@ function startApp() {
         if (reviewState.selectedPatient) {
           const found = list.find(p => p.pathology_no === reviewState.selectedPatient.pathology_no);
           if (found) {
-            selectReviewPatient(found, false);
+            selectReviewPatient(found, reloadSelectedPhotos);
           }
         }
       } else {
@@ -2120,7 +2325,7 @@ function startApp() {
 
   function renderReviewPatientList() {
     if (!reviewState.patients.length) {
-      reviewPatientList.innerHTML = `<div class="patient-list-empty">暂无待审核或免疫组化报告</div>`;
+      reviewPatientList.innerHTML = `<div class="patient-list-empty">暂无待审核或重切报告</div>`;
       return;
     }
 
@@ -2179,8 +2384,25 @@ function startApp() {
 
     revMicroscopicDesc.value = patient.microscopic_desc || "";
     revPathologyDiag.value = patient.pathology_diag || "";
-    revSaveStatus.textContent = "就绪";
-    revSaveStatus.style.color = "var(--text-muted)";
+    if (patient.archived === 2) {
+      revSaveStatus.textContent = "已同步草稿，请至【报告制作】重新归档";
+      revSaveStatus.style.color = "var(--warning)";
+    } else {
+      revSaveStatus.textContent = "就绪";
+      revSaveStatus.style.color = "var(--text-muted)";
+    }
+
+    const copiedPhotoDir = patient.review_photo_dir || patient.photo_dir || "";
+    reviewState.reviewPhotoDir = copiedPhotoDir;
+    if (revPhotoPathBox && revPhotoPathText) {
+      if (copiedPhotoDir) {
+        revPhotoPathBox.style.display = "flex";
+        revPhotoPathText.textContent = copiedPhotoDir;
+        revPhotoPathText.title = copiedPhotoDir;
+      } else {
+        revPhotoPathBox.style.display = "none";
+      }
+    }
 
     if (reloadPhotos) {
       await fetchReviewPhotosAndSlots(patient);
@@ -2189,10 +2411,20 @@ function startApp() {
 
   async function fetchReviewPhotosAndSlots(patient) {
     try {
-      const res = await fetch(`/api/patients/${encodeURIComponent(patient.pathology_no)}/photos`);
+      const res = await fetch(`/api/reviews/${encodeURIComponent(patient.pathology_no)}/photos`);
       const data = await res.json();
       if (data.success) {
         reviewState.photos = data.photos || [];
+        reviewState.reviewPhotoDir = data.photo_dir || patient.review_photo_dir || patient.photo_dir || "";
+        if (revPhotoPathBox && revPhotoPathText) {
+          if (reviewState.reviewPhotoDir) {
+            revPhotoPathBox.style.display = "flex";
+            revPhotoPathText.textContent = reviewState.reviewPhotoDir;
+            revPhotoPathText.title = reviewState.reviewPhotoDir;
+          } else {
+            revPhotoPathBox.style.display = "none";
+          }
+        }
 
         // Setup slots
         const totalSlots = Math.max(parseInt(patient.image_count) || 1, 1);
@@ -2222,7 +2454,7 @@ function startApp() {
             });
             if (item) {
               const pPath = typeof item === "object" ? item.path : item;
-              matchedPhoto = reviewState.photos.find(ph => ph.path === pPath);
+              matchedPhoto = findMatchingPhoto(reviewState.photos, pPath);
             }
           }
 
@@ -2363,14 +2595,24 @@ function startApp() {
       const data = await res.json();
 
       if (data.success) {
-        showToast("审核内容已保存，并已自动同步覆盖报告输出及归档目录！", "success");
-        if (data.duplicate_clinical_photos) {
-          alert(data.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，无法自动归档临床照片！\n已在资源管理器中同时打开【临床照片母目录】和【特殊归档目标目录】，请操作者手动筛选并将正确的照片文件夹归档复制。");
-        }
+        showToast(data.message || "审核内容已保存，并已同步两份草稿文件！", "success");
         reviewState.selectedPatient = data.patient;
-        revSaveStatus.textContent = `已覆盖同步 (${new Date().toLocaleTimeString()})`;
-        revSaveStatus.style.color = "var(--success)";
-        loadReviewPatients();
+        if (data.patient && data.patient.review_photo_dir) {
+          reviewState.reviewPhotoDir = data.patient.review_photo_dir;
+          if (revPhotoPathBox && revPhotoPathText) {
+            revPhotoPathBox.style.display = "flex";
+            revPhotoPathText.textContent = reviewState.reviewPhotoDir;
+            revPhotoPathText.title = reviewState.reviewPhotoDir;
+          }
+        }
+        if (data.patient && data.patient.archived === 2) {
+          revSaveStatus.textContent = `已同步草稿，请至【报告制作】重新归档 (${new Date().toLocaleTimeString()})`;
+          revSaveStatus.style.color = "var(--warning)";
+        } else {
+          revSaveStatus.textContent = `已同步草稿 (${new Date().toLocaleTimeString()})`;
+          revSaveStatus.style.color = "var(--success)";
+        }
+        loadReviewPatients(false);
       } else {
         showToast("保存失败: " + data.error, "error");
       }
@@ -2378,7 +2620,7 @@ function startApp() {
       showToast("保存异常: " + e.message, "error");
     } finally {
       btnRevSaveOverwrite.disabled = false;
-      btnRevSaveOverwrite.innerHTML = `<span>💾 保存修改并同步覆盖各归档 (2.9)</span>`;
+      btnRevSaveOverwrite.innerHTML = `<span>💾 保存修改并同步草稿</span>`;
     }
   });
 
@@ -2431,29 +2673,754 @@ function startApp() {
     }
   });
 
+  function getActiveReviewPhotoDir() {
+    if (reviewState.reviewPhotoDir) return reviewState.reviewPhotoDir;
+    if (reviewState.selectedPatient) {
+      return reviewState.selectedPatient.review_photo_dir || reviewState.selectedPatient.photo_dir || "";
+    }
+    return "";
+  }
+
+  async function openReviewPhotoDir() {
+    const dirPath = getActiveReviewPhotoDir();
+    if (!dirPath) return;
+    await fetch("/api/open_dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: dirPath })
+    });
+  }
+
+  function copyReviewPhotoPath() {
+    const dirPath = getActiveReviewPhotoDir();
+    if (!dirPath) return;
+    copyToClipboard(dirPath, "已复制复制后的病理照片目录路径！");
+  }
+
   btnRevFindClinical.addEventListener("click", () => {
     findClinicalPhotosForPatient(reviewState.selectedPatient);
   });
 
-  btnRevOpenPhotoDir.addEventListener("click", async () => {
-    if (!reviewState.selectedPatient || !reviewState.selectedPatient.photo_dir) return;
-    await fetch("/api/open_dir", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: reviewState.selectedPatient.photo_dir })
-    });
-  });
+  btnRevOpenPhotoDir.addEventListener("click", openReviewPhotoDir);
+  if (btnRevOpenPhotoDir2) btnRevOpenPhotoDir2.addEventListener("click", openReviewPhotoDir);
+  if (btnRevCopyPhotoPath) btnRevCopyPhotoPath.addEventListener("click", copyReviewPhotoPath);
+  if (btnRevCopyPhotoPath2) btnRevCopyPhotoPath2.addEventListener("click", copyReviewPhotoPath);
 
   reviewShowApprovedToggle.addEventListener("change", () => {
-    loadReviewPatients();
+    loadReviewPatients(true);
   });
 
-  reviewFilterKeyword.addEventListener("input", () => {
-    loadReviewPatients();
+  bindSidebarListFilter({
+    reportDateEl: reviewFilterReportDate,
+    btnReportTodayEl: btnReviewReportToday,
+    btnReportAllEl: btnReviewReportAll,
+    subDateEl: reviewFilterSubDate,
+    btnSubAllEl: btnReviewSubAll,
+    keywordEl: reviewFilterKeyword,
+    btnSearchEl: btnReviewSearch,
+    onReload: () => loadReviewPatients(true)
   });
 
   btnRefreshReview.addEventListener("click", () => {
-    loadReviewPatients();
+    loadReviewPatients(true);
+  });
+
+  // ==========================================================
+  // Phase 2.5: IHC Workspace (独立免疫组化模块)
+  // ==========================================================
+  const ihcState = {
+    patients: [],
+    selectedPatient: null,
+    photos: [],
+    slots: [],
+    hasUnsavedChanges: false
+  };
+
+  const ihcCountBadge = document.getElementById("ihc-count-badge");
+  const btnRefreshIhc = document.getElementById("btn-refresh-ihc");
+  const ihcFilterReportDate = document.getElementById("ihc-filter-report-date");
+  const btnIhcReportToday = document.getElementById("btn-ihc-report-today");
+  const btnIhcReportAll = document.getElementById("btn-ihc-report-all");
+  const ihcFilterSubDate = document.getElementById("ihc-filter-sub-date");
+  const btnIhcSubAll = document.getElementById("btn-ihc-sub-all");
+  const ihcFilterKeyword = document.getElementById("ihc-filter-keyword");
+  const btnIhcSearch = document.getElementById("btn-ihc-search");
+  const ihcPatientList = document.getElementById("ihc-patient-list");
+
+  const ihcEmptyHint = document.getElementById("ihc-empty-hint");
+  const ihcEditorPanel = document.getElementById("ihc-editor-panel");
+
+  const ihcBadgeName = document.getElementById("ihc-badge-name");
+  const ihcBadgeNo = document.getElementById("ihc-badge-no");
+  const ihcBadgeStatus = document.getElementById("ihc-badge-status");
+  const ihcBadgeDiag = document.getElementById("ihc-badge-diag");
+
+  const btnIhcCreate = document.getElementById("btn-ihc-create");
+  const btnIhcCreateInline = document.getElementById("btn-ihc-create-inline");
+  const btnIhcOpenPhotoDir = document.getElementById("btn-ihc-open-photo-dir");
+  const btnIhcCopyPhotoPath = document.getElementById("btn-ihc-copy-photo-path");
+  const btnIhcFindClinical = document.getElementById("btn-ihc-find-clinical");
+
+  const ihcNotCreatedBanner = document.getElementById("ihc-not-created-banner");
+  const ihcNotCreatedTitle = document.getElementById("ihc-not-created-title");
+  const ihcNotCreatedDesc = document.getElementById("ihc-not-created-desc");
+  const ihcPhotoPathBox = document.getElementById("ihc-photo-path-box");
+  const ihcPhotoPathText = document.getElementById("ihc-photo-path-text");
+  const btnIhcOpenPhotoDir2 = document.getElementById("btn-ihc-open-photo-dir-2");
+  const btnIhcCopyPhotoPath2 = document.getElementById("btn-ihc-copy-photo-path-2");
+
+  const ihcReportDoc = document.getElementById("ihc-report-doc");
+  const ihcReviewDoc = document.getElementById("ihc-review-doc");
+  const ihcReportDate = document.getElementById("ihc-report-date");
+
+  const btnIhcRefreshPhotos = document.getElementById("btn-ihc-refresh-photos");
+  const btnIhcAddSlot = document.getElementById("btn-ihc-add-slot");
+  const btnIhcAutoLayout = document.getElementById("btn-ihc-auto-layout");
+  const ihcAvailPhotosCount = document.getElementById("ihc-avail-photos-count");
+  const ihcAvailablePhotosList = document.getElementById("ihc-available-photos-list");
+  const ihcSlotsStatusDesc = document.getElementById("ihc-slots-status-desc");
+  const ihcSlotsGrid = document.getElementById("ihc-slots-grid");
+
+  const btnIhcOpenTemplateModal = document.getElementById("btn-ihc-open-template-modal");
+  const ihcRecommendContainer = document.getElementById("ihc-recommend-container");
+  const ihcRecommendChips = document.getElementById("ihc-recommend-chips");
+  const ihcMicroscopicDesc = document.getElementById("ihc-microscopic-desc");
+
+  const btnIhcRegenDiag = document.getElementById("btn-ihc-regen-diag");
+  const ihcPathologyDiag = document.getElementById("ihc-pathology-diag");
+  const ihcSaveStatus = document.getElementById("ihc-save-status");
+
+  const btnIhcPreview = document.getElementById("btn-ihc-preview");
+  const btnIhcOpenWord = document.getElementById("btn-ihc-open-word");
+  const btnIhcOpenExplorer = document.getElementById("btn-ihc-open-explorer");
+  const btnIhcSave = document.getElementById("btn-ihc-save");
+  const btnIhcArchive = document.getElementById("btn-ihc-archive");
+
+  function markIhcDirty() {
+    if (!ihcState.selectedPatient || !(ihcState.selectedPatient.ihc_report && ihcState.selectedPatient.ihc_report.ihc_created)) return;
+    ihcState.hasUnsavedChanges = true;
+    ihcSaveStatus.textContent = "有未保存修改";
+    ihcSaveStatus.style.color = "var(--warning)";
+  }
+
+  [ihcReportDoc, ihcReviewDoc, ihcReportDate, ihcMicroscopicDesc, ihcPathologyDiag].forEach(el => {
+    if (el) {
+      el.addEventListener("input", markIhcDirty);
+      el.addEventListener("change", markIhcDirty);
+    }
+  });
+
+  function setIhcEditorEnabled(enabled) {
+    [ihcReportDoc, ihcReviewDoc, ihcReportDate, ihcMicroscopicDesc, ihcPathologyDiag].forEach(el => {
+      if (el) el.disabled = !enabled;
+    });
+    [
+      btnIhcOpenPhotoDir, btnIhcCopyPhotoPath, btnIhcOpenPhotoDir2, btnIhcCopyPhotoPath2,
+      btnIhcRefreshPhotos, btnIhcAddSlot, btnIhcAutoLayout, btnIhcOpenTemplateModal,
+      btnIhcRegenDiag, btnIhcPreview, btnIhcOpenWord, btnIhcOpenExplorer,
+      btnIhcSave, btnIhcArchive
+    ].forEach(btn => {
+      if (btn) btn.disabled = !enabled;
+    });
+  }
+
+  async function loadIhcPatients() {
+    try {
+      const params = new URLSearchParams();
+      if (ihcFilterReportDate && ihcFilterReportDate.value) {
+        params.set("report_date", ihcFilterReportDate.value);
+      }
+      if (ihcFilterSubDate && ihcFilterSubDate.value) {
+        params.set("submission_date", ihcFilterSubDate.value);
+      }
+      if (ihcFilterKeyword && ihcFilterKeyword.value.trim()) {
+        params.set("keyword", ihcFilterKeyword.value.trim());
+      }
+      ihcPatientList.innerHTML = `<div class="patient-list-empty">正在加载免疫组化数据...</div>`;
+
+      const res = await fetch(`/api/ihc/list?${params.toString()}`);
+      const data = await res.json();
+
+      if (data.success) {
+        const list = data.patients || [];
+        ihcState.patients = list;
+        ihcCountBadge.textContent = `${list.length} 人`;
+        renderIhcPatientList();
+
+        if (ihcState.selectedPatient) {
+          const found = list.find(p => p.pathology_no === ihcState.selectedPatient.pathology_no);
+          if (found) {
+            selectIhcPatient(found, false);
+          }
+        }
+      } else {
+        ihcPatientList.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">${data.error}</div>`;
+      }
+    } catch (e) {
+      ihcPatientList.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">加载失败: ${e.message}</div>`;
+    }
+  }
+
+  function renderIhcPatientList() {
+    if (!ihcState.patients.length) {
+      ihcPatientList.innerHTML = `<div class="patient-list-empty">暂无标记免疫组化的患者</div>`;
+      return;
+    }
+
+    ihcPatientList.innerHTML = "";
+    ihcState.patients.forEach(p => {
+      const ihc = p.ihc_report || {};
+      const card = document.createElement("div");
+      const isSelected = ihcState.selectedPatient && ihcState.selectedPatient.pathology_no === p.pathology_no;
+      let fillClass = "status-fill-ihc";
+      let statusBadge = `<span class="badge-status badge-pending">未创建组化报告</span>`;
+      if (ihc.archived === 1) {
+        fillClass = "status-fill-archived";
+        statusBadge = `<span class="badge-status badge-archived">组化已归档</span>`;
+      } else if (ihc.archived === 2) {
+        fillClass = "status-fill-rearchive";
+        statusBadge = `<span class="badge-status badge-rearchive">组化需重归</span>`;
+      } else if (ihc.ihc_created) {
+        fillClass = "status-fill-saved";
+        statusBadge = `<span class="badge-status badge-ihc">已创建草稿</span>`;
+      }
+
+      let origArchBadge = p.archived === 0
+        ? `<span class="badge-status badge-recut">原报告未归档</span>`
+        : "";
+
+      card.className = `patient-list-item ${fillClass} ${isSelected ? "selected" : ""}`.trim();
+      const diagText = (ihc.ihc_created && ihc.pathology_diag) ? ihc.pathology_diag : (p.pathology_diag || p.clinical_diagnosis || "未诊断");
+
+      card.innerHTML = `
+        <div class="patient-item-header">
+          <span class="patient-item-name">${p.name}</span>
+          <span class="patient-item-no">${p.pathology_no}</span>
+        </div>
+        <div class="patient-item-meta">
+          <span>${p.gender || "-"} / ${formatAgeDisplay(p.age)}</span>
+          <span>送检: ${p.submission_date || "-"}</span>
+        </div>
+        <div class="patient-item-body">
+          <div class="patient-item-diag" title="${diagText}">${diagText}</div>
+          <div class="patient-item-badges">${statusBadge}${origArchBadge}</div>
+        </div>
+      `;
+
+      card.addEventListener("click", () => {
+        selectIhcPatient(p, true);
+      });
+
+      ihcPatientList.appendChild(card);
+    });
+  }
+
+  async function selectIhcPatient(patient, reloadPhotos = true) {
+    ihcState.selectedPatient = patient;
+    ihcState.hasUnsavedChanges = false;
+    ihcEmptyHint.style.display = "none";
+    ihcEditorPanel.style.display = "flex";
+
+    document.querySelectorAll("#ihc-patient-list .patient-list-item").forEach(el => {
+      const noEl = el.querySelector(".patient-item-no");
+      if (noEl && noEl.textContent.trim() === patient.pathology_no) {
+        el.classList.add("selected");
+      } else {
+        el.classList.remove("selected");
+      }
+    });
+
+    const ihc = patient.ihc_report || {};
+    const created = !!ihc.ihc_created;
+
+    ihcBadgeName.textContent = patient.name;
+    ihcBadgeNo.textContent = patient.pathology_no;
+
+    if (!created) {
+      ihcBadgeStatus.textContent = "未创建免疫组化报告";
+      ihcBadgeDiag.textContent = `原诊断: ${patient.pathology_diag || patient.clinical_diagnosis || "未诊断"}`;
+      btnIhcCreate.innerHTML = `<span>🧪 创建免疫组化报告</span>`;
+      ihcNotCreatedBanner.style.display = "flex";
+      ihcPhotoPathBox.style.display = "none";
+      ihcPhotoPathText.textContent = "-";
+      ihcPhotoPathText.title = "";
+      if (patient.archived === 0) {
+        ihcNotCreatedTitle.textContent = "⚠️ 原报告尚未归档，无法创建免疫组化报告";
+        ihcNotCreatedDesc.textContent = "请先在【报告制作】（或【报告审核】）完成原报告归档至“已归档报告”后，再点击【创建免疫组化报告】。";
+      } else {
+        ihcNotCreatedTitle.textContent = "尚未创建该患者的免疫组化报告副本";
+        ihcNotCreatedDesc.textContent = "请点击【创建免疫组化报告】，系统将复制该患者“已归档报告”及病理照片目录至“特殊患者归档\\免疫组化”中（不复制临床照片）。";
+      }
+
+      ihcReportDoc.value = patient.report_doctor || state.config.report_doctor || "张医生";
+      ihcReviewDoc.value = patient.review_doctor || state.config.review_doctor || "李主任";
+      ihcReportDate.value = toIsoDateString(patient.report_date_raw || patient.report_date);
+      ihcMicroscopicDesc.value = "";
+      ihcPathologyDiag.value = "";
+      ihcState.photos = [];
+      ihcState.slots = [];
+      ihcAvailPhotosCount.textContent = "0";
+      ihcAvailablePhotosList.innerHTML = `<div class="photo-strip-empty">请先点击“创建免疫组化报告”以建立独立免疫组化照片目录</div>`;
+      ihcSlotsGrid.innerHTML = "";
+      ihcSlotsStatusDesc.textContent = "尚未创建免疫组化报告";
+      ihcRecommendContainer.style.display = "none";
+      ihcRecommendChips.innerHTML = "";
+      ihcSaveStatus.textContent = "未创建免疫组化报告";
+      ihcSaveStatus.style.color = "var(--text-muted)";
+      setIhcEditorEnabled(false);
+      return;
+    }
+
+    ihcBadgeStatus.textContent = ihc.archived === 1 ? "免疫组化已归档" : (ihc.archived === 2 ? "免疫组化需重归" : "免疫组化草稿");
+    ihcBadgeDiag.textContent = `诊断: ${ihc.pathology_diag || patient.pathology_diag || "未诊断"}`;
+    btnIhcCreate.innerHTML = `<span>🔄 重建免疫组化报告</span>`;
+    ihcNotCreatedBanner.style.display = "none";
+    ihcPhotoPathBox.style.display = "flex";
+    ihcPhotoPathText.textContent = ihc.ihc_photo_dir || "-";
+    ihcPhotoPathText.title = ihc.ihc_photo_dir || "";
+
+    ihcReportDoc.value = ihc.report_doctor || patient.report_doctor || state.config.report_doctor || "张医生";
+    ihcReviewDoc.value = ihc.review_doctor || patient.review_doctor || state.config.review_doctor || "李主任";
+    ihcReportDate.value = toIsoDateString(ihc.report_date_raw || ihc.report_date || patient.report_date_raw || patient.report_date);
+    ihcMicroscopicDesc.value = ihc.microscopic_desc || "";
+    ihcPathologyDiag.value = ihc.pathology_diag || "";
+
+    if (ihc.archived === 1) {
+      ihcSaveStatus.textContent = "免疫组化报告已归档";
+      ihcSaveStatus.style.color = "var(--success)";
+    } else if (ihc.archived === 2) {
+      ihcSaveStatus.textContent = "已保存修改，需重新归档";
+      ihcSaveStatus.style.color = "var(--warning)";
+    } else {
+      ihcSaveStatus.textContent = "已创建草稿，就绪";
+      ihcSaveStatus.style.color = "var(--text-muted)";
+    }
+
+    setIhcEditorEnabled(true);
+
+    if (reloadPhotos) {
+      await fetchIhcPhotosAndSlots(patient);
+    }
+  }
+
+  async function fetchIhcPhotosAndSlots(patient) {
+    const ihc = patient.ihc_report || {};
+    if (!ihc.ihc_created) return;
+    try {
+      ihcAvailablePhotosList.innerHTML = `<div class="photo-strip-empty">正在扫描免疫组化照片目录...</div>`;
+      const res = await fetch(`/api/ihc/${encodeURIComponent(patient.pathology_no)}/photos`);
+      const data = await res.json();
+      if (data.success) {
+        ihcState.photos = data.photos || [];
+        ihcAvailPhotosCount.textContent = ihcState.photos.length;
+        renderIhcAvailablePhotosStrip();
+        renderIhcRecommendChips(data.recommended_templates || []);
+
+        const totalSlots = Math.max(parseInt(ihc.image_count || patient.image_count) || 1, 1);
+        let biopsySites = ihc.biopsy_sites && ihc.biopsy_sites.length ? ihc.biopsy_sites : (patient.biopsy_sites || []);
+        if (typeof biopsySites === "string") {
+          biopsySites = biopsySites.split(";").map(s => s.trim()).filter(Boolean);
+        }
+        let existingSelected = ihc.selected_images || [];
+        if (typeof existingSelected === "string") {
+          try { existingSelected = JSON.parse(existingSelected); } catch (e) { existingSelected = []; }
+        }
+
+        ihcState.slots = [];
+        for (let i = 1; i <= totalSlots; i++) {
+          const siteName = (biopsySites.length >= i) ? biopsySites[i - 1] : "";
+          let matchedPhoto = null;
+          if (Array.isArray(existingSelected) && existingSelected.length) {
+            const item = existingSelected.find((it, idx) => {
+              if (typeof it === "object" && it !== null) return it.slot === i;
+              return idx === i - 1;
+            });
+            if (item) {
+              const pPath = typeof item === "object" ? item.path : item;
+              if (pPath) {
+                matchedPhoto = ihcState.photos.find(ph => ph.path === pPath);
+              }
+            }
+          }
+          if (!matchedPhoto && ihcState.photos.length) {
+            matchedPhoto = ihcState.photos.find(ph => (ph.indices && ph.indices.includes(String(i))) || ph.index_num === i);
+          }
+          ihcState.slots.push({ slot: i, site: siteName, photo: matchedPhoto || null });
+        }
+        renderIhcSlots();
+      }
+    } catch (e) {
+      showToast("读取免疫组化照片失败: " + e.message, "error");
+    }
+  }
+
+  function renderIhcAvailablePhotosStrip() {
+    if (!ihcState.photos.length) {
+      ihcAvailablePhotosList.innerHTML = `<div class="photo-strip-empty">复制后的免疫组化照片目录中暂无图片（可打开目录录入照片后点击“重新读取照片”）</div>`;
+      return;
+    }
+    ihcAvailablePhotosList.innerHTML = "";
+    ihcState.photos.forEach(ph => {
+      const card = document.createElement("div");
+      card.className = "photo-strip-card";
+      const idxText = ph.indices && ph.indices.length ? ph.indices.join(".") : "";
+      const tagHtml = idxText ? `<span class="photo-strip-tag">${idxText}</span>` : "";
+      card.innerHTML = `
+        <img src="${ph.url}" class="photo-strip-img" alt="${ph.filename}">
+        <div class="photo-strip-name" title="${ph.filename}">${tagHtml} ${ph.diagnosis || ph.filename}</div>
+      `;
+      card.addEventListener("click", () => {
+        openPhotoZoom(ph.url, `${ph.filename} (${ph.diagnosis || ""})`);
+      });
+      ihcAvailablePhotosList.appendChild(card);
+    });
+  }
+
+  function renderIhcRecommendChips(recs) {
+    if (!recs || !recs.length) {
+      ihcRecommendContainer.style.display = "none";
+      ihcRecommendChips.innerHTML = "";
+      return;
+    }
+    ihcRecommendContainer.style.display = "flex";
+    ihcRecommendChips.innerHTML = "";
+    recs.forEach(t => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "recommend-chip";
+      chip.textContent = `+ ${t.name}`;
+      chip.title = `点击将【${t.name}】镜下描述追加到输入框`;
+      chip.addEventListener("click", () => {
+        if (ihcMicroscopicDesc.value.trim()) {
+          ihcMicroscopicDesc.value += "\n" + t.desc;
+        } else {
+          ihcMicroscopicDesc.value = t.desc;
+        }
+        markIhcDirty();
+        showToast(`已追加推荐模板【${t.name}】至镜下描述`, "success");
+      });
+      ihcRecommendChips.appendChild(chip);
+    });
+  }
+
+  function renderIhcSlots() {
+    ihcSlotsStatusDesc.textContent = `当前共 ${ihcState.slots.length} 个排版插槽`;
+    ihcSlotsGrid.innerHTML = "";
+    ihcState.slots.forEach((s, idx) => {
+      const card = document.createElement("div");
+      card.className = "slot-card";
+      const hasPhoto = s.photo !== null;
+      const previewHtml = hasPhoto
+        ? `<div class="slot-preview-box has-photo" title="点击放大图片"><img src="${s.photo.url}" class="slot-preview-img" alt="插槽 ${s.slot}"></div>`
+        : `<div class="slot-preview-box"><div class="slot-empty-text"><span>🖼️</span><span>待选择图片</span></div></div>`;
+
+      let selectOptions = `<option value="">-- 未选择图片 --</option>`;
+      ihcState.photos.forEach(ph => {
+        const isSel = s.photo && s.photo.path === ph.path;
+        const idxT = ph.indices && ph.indices.length ? `[${ph.indices.join(".")}] ` : "";
+        selectOptions += `<option value="${ph.path}" ${isSel ? "selected" : ""}>${idxT}${ph.diagnosis || ph.filename}</option>`;
+      });
+
+      card.innerHTML = `
+        <div class="slot-card-header">
+          <span>第 ${s.slot} 张图片</span>
+          ${ihcState.slots.length > 1 ? `<button type="button" class="btn btn-secondary btn-sm btn-remove-ihc-slot" style="padding: 1px 6px; font-size: 11px;">✕</button>` : ""}
+        </div>
+        ${previewHtml}
+        <div class="form-group" style="margin-bottom: 4px;">
+          <input type="text" class="slot-site-input" placeholder="部位名称" value="${s.site || ""}">
+        </div>
+        <div class="form-group" style="margin-bottom: 2px;">
+          <select class="slot-photo-select">${selectOptions}</select>
+        </div>
+        <div class="slot-actions">
+          ${hasPhoto ? `<button type="button" class="btn btn-secondary btn-sm btn-zoom-ihc-slot" style="padding: 2px 6px; font-size: 11px;">🔍 放大</button>` : `<span></span>`}
+          ${hasPhoto ? `<button type="button" class="btn btn-secondary btn-sm btn-clear-ihc-slot" style="padding: 2px 6px; font-size: 11px; color: var(--danger);">移除图片</button>` : `<span></span>`}
+        </div>
+      `;
+
+      card.querySelector(".slot-site-input").addEventListener("input", e => {
+        s.site = e.target.value;
+        markIhcDirty();
+      });
+      card.querySelector(".slot-photo-select").addEventListener("change", e => {
+        s.photo = ihcState.photos.find(p => p.path === e.target.value) || null;
+        markIhcDirty();
+        renderIhcSlots();
+      });
+      if (hasPhoto) {
+        card.querySelector(".slot-preview-box").addEventListener("click", () => {
+          openPhotoZoom(s.photo.url, `第 ${s.slot} 张: ${s.photo.filename}`);
+        });
+        const zoomBtn = card.querySelector(".btn-zoom-ihc-slot");
+        if (zoomBtn) {
+          zoomBtn.addEventListener("click", () => {
+            openPhotoZoom(s.photo.url, `第 ${s.slot} 张: ${s.photo.filename}`);
+          });
+        }
+        const clearBtn = card.querySelector(".btn-clear-ihc-slot");
+        if (clearBtn) {
+          clearBtn.addEventListener("click", () => {
+            s.photo = null;
+            markIhcDirty();
+            renderIhcSlots();
+          });
+        }
+      }
+      const removeBtn = card.querySelector(".btn-remove-ihc-slot");
+      if (removeBtn) {
+        removeBtn.addEventListener("click", () => {
+          if (ihcState.slots.length > 1) {
+            ihcState.slots.splice(idx, 1);
+            ihcState.slots.forEach((item, i) => item.slot = i + 1);
+            markIhcDirty();
+            renderIhcSlots();
+          }
+        });
+      }
+      ihcSlotsGrid.appendChild(card);
+    });
+  }
+
+  async function handleCreateIhcReport() {
+    if (!ihcState.selectedPatient) return;
+    const p = ihcState.selectedPatient;
+    const ihc = p.ihc_report || {};
+    if (ihc.ihc_created) {
+      if (!confirm("该患者已存在免疫组化报告草稿，重新创建将用【已归档报告】重新覆盖免疫组化目录中的报告文档（已录入的照片文件将保留），确定继续吗？")) {
+        return;
+      }
+    }
+
+    btnIhcCreate.disabled = true;
+    try {
+      const res = await fetch("/api/ihc/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pathology_no: p.pathology_no })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(data.message, "success");
+        ihcState.selectedPatient = data.patient;
+        await selectIhcPatient(data.patient, true);
+        loadIhcPatients();
+      } else {
+        alert(data.error || "创建免疫组化报告失败");
+        showToast(data.error || "创建失败", "error");
+      }
+    } catch (e) {
+      showToast("创建异常: " + e.message, "error");
+    } finally {
+      btnIhcCreate.disabled = false;
+    }
+  }
+
+  async function handleSaveIhcReport() {
+    if (!ihcState.selectedPatient) return false;
+    const p = ihcState.selectedPatient;
+    const selectedImgs = ihcState.slots.map(s => ({
+      slot: s.slot,
+      path: s.photo ? s.photo.path : null,
+      site: (s.site || "").trim()
+    }));
+    const payload = {
+      pathology_no: p.pathology_no,
+      report_doctor: ihcReportDoc.value.trim(),
+      review_doctor: ihcReviewDoc.value.trim(),
+      report_date: ihcReportDate.value.trim(),
+      microscopic_desc: ihcMicroscopicDesc.value.trim(),
+      pathology_diag: ihcPathologyDiag.value.trim(),
+      selected_images: selectedImgs,
+      image_count: ihcState.slots.length || 1,
+      biopsy_sites: ihcState.slots.map(s => (s.site || "").trim())
+    };
+
+    btnIhcSave.disabled = true;
+    btnIhcSave.innerHTML = `<span>⏳ 保存中...</span>`;
+    try {
+      const res = await fetch("/api/ihc/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(data.message, "success");
+        ihcState.selectedPatient = data.patient;
+        ihcState.hasUnsavedChanges = false;
+        ihcSaveStatus.textContent = `已独立保存 (${new Date().toLocaleTimeString()})`;
+        ihcSaveStatus.style.color = "var(--success)";
+        loadIhcPatients();
+        return true;
+      } else {
+        showToast("保存失败: " + data.error, "error");
+        return false;
+      }
+    } catch (e) {
+      showToast("保存异常: " + e.message, "error");
+      return false;
+    } finally {
+      btnIhcSave.disabled = false;
+      btnIhcSave.innerHTML = `<span>💾 保存免疫组化报告</span>`;
+    }
+  }
+
+  btnIhcCreate.addEventListener("click", handleCreateIhcReport);
+  if (btnIhcCreateInline) btnIhcCreateInline.addEventListener("click", handleCreateIhcReport);
+
+  async function openCopiedIhcPhotoDir() {
+    const ihc = ihcState.selectedPatient && ihcState.selectedPatient.ihc_report;
+    if (!ihc || !ihc.ihc_photo_dir) return;
+    await fetch("/api/open_dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: ihc.ihc_photo_dir })
+    });
+  }
+  function copyCopiedIhcPhotoPath() {
+    const ihc = ihcState.selectedPatient && ihcState.selectedPatient.ihc_report;
+    if (!ihc || !ihc.ihc_photo_dir) return;
+    copyToClipboard(ihc.ihc_photo_dir, "已复制复制后的免疫组化病理照片目录路径！");
+  }
+
+  btnIhcOpenPhotoDir.addEventListener("click", openCopiedIhcPhotoDir);
+  btnIhcOpenPhotoDir2.addEventListener("click", openCopiedIhcPhotoDir);
+  btnIhcCopyPhotoPath.addEventListener("click", copyCopiedIhcPhotoPath);
+  btnIhcCopyPhotoPath2.addEventListener("click", copyCopiedIhcPhotoPath);
+  btnIhcFindClinical.addEventListener("click", () => {
+    findClinicalPhotosForPatient(ihcState.selectedPatient);
+  });
+
+  btnIhcRefreshPhotos.addEventListener("click", async () => {
+    if (ihcState.selectedPatient) {
+      await fetchIhcPhotosAndSlots(ihcState.selectedPatient);
+      showToast("已重新扫描复制后的免疫组化照片目录！", "success");
+    }
+  });
+
+  btnIhcAddSlot.addEventListener("click", () => {
+    const next = ihcState.slots.length + 1;
+    if (next > 9) return showToast("最多支持 9 张插槽", "error");
+    ihcState.slots.push({ slot: next, site: "", photo: null });
+    markIhcDirty();
+    renderIhcSlots();
+  });
+
+  btnIhcAutoLayout.addEventListener("click", () => {
+    ihcState.slots.forEach(s => {
+      const matched = ihcState.photos.find(ph => (ph.indices && ph.indices.includes(String(s.slot))) || ph.index_num === s.slot);
+      if (matched) s.photo = matched;
+    });
+    markIhcDirty();
+    renderIhcSlots();
+    showToast("已按照图片编号完成一键自动排版！", "success");
+  });
+
+  btnIhcRegenDiag.addEventListener("click", async () => {
+    if (!ihcState.selectedPatient) return;
+    try {
+      const slotCnt = ihcState.slots.length || 1;
+      const res = await fetch(`/api/ihc/${encodeURIComponent(ihcState.selectedPatient.pathology_no)}/photos?image_count=${slotCnt}`);
+      const data = await res.json();
+      if (data.success && data.auto_diagnosis) {
+        ihcPathologyDiag.value = data.auto_diagnosis;
+        markIhcDirty();
+        showToast("已根据免疫组化照片命名重新合成病理诊断！", "success");
+      } else {
+        showToast("未能从免疫组化照片命名中提取出有效诊断", "error");
+      }
+    } catch (e) {
+      showToast("合成诊断失败: " + e.message, "error");
+    }
+  });
+
+  btnIhcOpenTemplateModal.addEventListener("click", () => {
+    openTemplateModal(ihcMicroscopicDesc);
+  });
+
+  btnIhcSave.addEventListener("click", handleSaveIhcReport);
+
+  btnIhcArchive.addEventListener("click", async () => {
+    if (!ihcState.selectedPatient) return;
+    if (ihcState.hasUnsavedChanges) {
+      if (!confirm("当前免疫组化报告有尚未保存的修改，是否先保存后再归档？\n点击【确定】将先保存当前修改并归档；点击【取消】取消操作。")) {
+        return;
+      }
+      const savedOk = await handleSaveIhcReport();
+      if (!savedOk) return;
+    }
+
+    const p = ihcState.selectedPatient;
+    btnIhcArchive.disabled = true;
+    btnIhcArchive.innerHTML = `<span>⏳ 归档中...</span>`;
+    try {
+      const res = await fetch("/api/ihc/archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pathology_no: p.pathology_no })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(data.message, "success");
+        ihcState.selectedPatient = data.patient;
+        ihcSaveStatus.textContent = "免疫组化报告已归档";
+        ihcSaveStatus.style.color = "var(--success)";
+        loadIhcPatients();
+      } else {
+        alert("归档失败: " + data.error);
+        showToast("归档失败: " + data.error, "error");
+      }
+    } catch (e) {
+      showToast("归档异常: " + e.message, "error");
+    } finally {
+      btnIhcArchive.disabled = false;
+      btnIhcArchive.innerHTML = `<span>📦 归档免疫组化报告</span>`;
+    }
+  });
+
+  btnIhcPreview.addEventListener("click", () => {
+    if (ihcState.selectedPatient) {
+      openReportPreviewModal(ihcState.selectedPatient.pathology_no, "ihc");
+    }
+  });
+
+  btnIhcOpenWord.addEventListener("click", async () => {
+    const ihc = ihcState.selectedPatient && ihcState.selectedPatient.ihc_report;
+    if (ihc && ihc.ihc_doc_path) {
+      await fetch("/api/open_file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: ihc.ihc_doc_path })
+      });
+    }
+  });
+
+  btnIhcOpenExplorer.addEventListener("click", async () => {
+    const ihc = ihcState.selectedPatient && ihcState.selectedPatient.ihc_report;
+    const target = (ihc && (ihc.ihc_doc_path || ihc.ihc_dir)) || "";
+    if (target) {
+      await fetch("/api/open_explorer_select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: target })
+      });
+    }
+  });
+
+  bindSidebarListFilter({
+    reportDateEl: ihcFilterReportDate,
+    btnReportTodayEl: btnIhcReportToday,
+    btnReportAllEl: btnIhcReportAll,
+    subDateEl: ihcFilterSubDate,
+    btnSubAllEl: btnIhcSubAll,
+    keywordEl: ihcFilterKeyword,
+    btnSearchEl: btnIhcSearch,
+    onReload: loadIhcPatients
+  });
+
+  btnRefreshIhc.addEventListener("click", () => {
+    loadIhcPatients();
   });
 
   // ==========================================================
@@ -2538,6 +3505,7 @@ function startApp() {
       card.querySelector(".btn-insert-tmpl").addEventListener("click", () => {
         if (activeTemplateTargetTextarea) {
           activeTemplateTargetTextarea.value = t.desc;
+          activeTemplateTargetTextarea.dispatchEvent(new Event("input", { bubbles: true }));
           showToast(`已将【${t.name}】填入镜下描述`, "success");
           templateLibraryModal.style.display = "none";
         }
@@ -2550,6 +3518,7 @@ function startApp() {
           } else {
             activeTemplateTargetTextarea.value = t.desc;
           }
+          activeTemplateTargetTextarea.dispatchEvent(new Event("input", { bubbles: true }));
           showToast(`已将【${t.name}】追加到镜下描述`, "success");
           templateLibraryModal.style.display = "none";
         }
@@ -2619,62 +3588,141 @@ function startApp() {
   const outputState = {
     regPatients: [],
     specPatients: [],
-    regPrefix: "ALL",
-    specPrefix: "ALL"
+    ihcPatients: []
   };
 
   const outputRegCountBadge = document.getElementById("output-reg-count-badge");
-  const outputRegPrefixSelect = document.getElementById("output-reg-prefix-select");
   const btnRefreshOutputReg = document.getElementById("btn-refresh-output-reg");
+  const btnOutputRegQuery = document.getElementById("btn-output-reg-query");
   const btnOutputRegPrintToday = document.getElementById("btn-output-reg-print-today");
   const outputRegPatientList = document.getElementById("output-reg-patient-list");
+  const outputRegReportStart = document.getElementById("output-reg-report-start");
+  const outputRegReportEnd = document.getElementById("output-reg-report-end");
+  const btnOutputRegRepToday = document.getElementById("btn-output-reg-rep-today");
+  const btnOutputRegRepWeek = document.getElementById("btn-output-reg-rep-week");
+  const btnOutputRegRepMonth = document.getElementById("btn-output-reg-rep-month");
+  const btnOutputRegRepAll = document.getElementById("btn-output-reg-rep-all");
+  const outputRegSubStart = document.getElementById("output-reg-sub-start");
+  const outputRegSubEnd = document.getElementById("output-reg-sub-end");
+  const btnOutputRegSubAll = document.getElementById("btn-output-reg-sub-all");
+  const outputRegPfxAll = document.getElementById("output-reg-pfx-all");
+  const outputRegPfxChks = document.querySelectorAll(".output-reg-pfx-chk");
 
   const outputSpecCountBadge = document.getElementById("output-spec-count-badge");
-  const outputSpecPrefixSelect = document.getElementById("output-spec-prefix-select");
   const btnRefreshOutputSpec = document.getElementById("btn-refresh-output-spec");
+  const btnOutputSpecQuery = document.getElementById("btn-output-spec-query");
   const btnOutputSpecPrintToday = document.getElementById("btn-output-spec-print-today");
   const outputSpecPatientList = document.getElementById("output-spec-patient-list");
+  const outputSpecReportStart = document.getElementById("output-spec-report-start");
+  const outputSpecReportEnd = document.getElementById("output-spec-report-end");
+  const btnOutputSpecRepToday = document.getElementById("btn-output-spec-rep-today");
+  const btnOutputSpecRepWeek = document.getElementById("btn-output-spec-rep-week");
+  const btnOutputSpecRepMonth = document.getElementById("btn-output-spec-rep-month");
+  const btnOutputSpecRepAll = document.getElementById("btn-output-spec-rep-all");
+  const outputSpecSubStart = document.getElementById("output-spec-sub-start");
+  const outputSpecSubEnd = document.getElementById("output-spec-sub-end");
+  const btnOutputSpecSubAll = document.getElementById("btn-output-spec-sub-all");
+  const outputSpecPfxAll = document.getElementById("output-spec-pfx-all");
+  const outputSpecPfxChks = document.querySelectorAll(".output-spec-pfx-chk");
 
-  // Load Regular Output Patients (List 1)
-  async function loadOutputRegularPatients() {
+  const outputIhcCountBadge = document.getElementById("output-ihc-count-badge");
+  const btnRefreshOutputIhc = document.getElementById("btn-refresh-output-ihc");
+  const btnOutputIhcQuery = document.getElementById("btn-output-ihc-query");
+  const btnOutputIhcPrintToday = document.getElementById("btn-output-ihc-print-today");
+  const outputIhcPatientList = document.getElementById("output-ihc-patient-list");
+  const outputIhcReportStart = document.getElementById("output-ihc-report-start");
+  const outputIhcReportEnd = document.getElementById("output-ihc-report-end");
+  const btnOutputIhcRepToday = document.getElementById("btn-output-ihc-rep-today");
+  const btnOutputIhcRepWeek = document.getElementById("btn-output-ihc-rep-week");
+  const btnOutputIhcRepMonth = document.getElementById("btn-output-ihc-rep-month");
+  const btnOutputIhcRepAll = document.getElementById("btn-output-ihc-rep-all");
+  const outputIhcSubStart = document.getElementById("output-ihc-sub-start");
+  const outputIhcSubEnd = document.getElementById("output-ihc-sub-end");
+  const btnOutputIhcSubAll = document.getElementById("btn-output-ihc-sub-all");
+  const outputIhcPfxAll = document.getElementById("output-ihc-pfx-all");
+  const outputIhcPfxChks = document.querySelectorAll(".output-ihc-pfx-chk");
+
+  async function loadOutputPatientsGroup(cfg) {
     try {
-      outputRegPatientList.innerHTML = `<div class="patient-list-empty">正在加载常规已归档报告...</div>`;
-      const pfx = outputRegPrefixSelect.value;
-      const res = await fetch(`/api/output/patients?type=regular&prefix=${encodeURIComponent(pfx)}`);
+      cfg.listEl.innerHTML = `<div class="patient-list-empty">${cfg.loadingText}</div>`;
+      const params = new URLSearchParams();
+      params.set("type", cfg.type);
+      params.set("prefixes", getPrefixGroupParam(cfg.pfxAllEl, cfg.pfxChks));
+      if (cfg.repStartEl && cfg.repStartEl.value) params.set("report_start_date", cfg.repStartEl.value);
+      if (cfg.repEndEl && cfg.repEndEl.value) params.set("report_end_date", cfg.repEndEl.value);
+      if (cfg.subStartEl && cfg.subStartEl.value) params.set("sub_start_date", cfg.subStartEl.value);
+      if (cfg.subEndEl && cfg.subEndEl.value) params.set("sub_end_date", cfg.subEndEl.value);
+
+      const res = await fetch(`/api/output/patients?${params.toString()}`);
       const data = await res.json();
       if (data.success) {
-        outputState.regPatients = data.patients || [];
-        outputRegCountBadge.textContent = `${outputState.regPatients.length} 人`;
-        renderOutputList(outputRegPatientList, outputState.regPatients, false);
+        const list = data.patients || [];
+        if (cfg.type === "special") {
+          outputState.specPatients = list;
+        } else if (cfg.type === "ihc") {
+          outputState.ihcPatients = list;
+        } else {
+          outputState.regPatients = list;
+        }
+        cfg.badgeEl.textContent = `${list.length} 人`;
+        renderOutputList(cfg.listEl, list, cfg.type);
       } else {
-        outputRegPatientList.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">${data.error}</div>`;
+        cfg.listEl.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">${data.error}</div>`;
       }
     } catch (e) {
-      outputRegPatientList.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">加载异常: ${e.message}</div>`;
+      cfg.listEl.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">加载异常: ${e.message}</div>`;
     }
   }
 
-  // Load Special Approved Output Patients (List 2)
-  async function loadOutputSpecialPatients() {
-    try {
-      outputSpecPatientList.innerHTML = `<div class="patient-list-empty">正在加载特殊审核完成报告...</div>`;
-      const pfx = outputSpecPrefixSelect.value;
-      const res = await fetch(`/api/output/patients?type=special&prefix=${encodeURIComponent(pfx)}`);
-      const data = await res.json();
-      if (data.success) {
-        outputState.specPatients = data.patients || [];
-        outputSpecCountBadge.textContent = `${outputState.specPatients.length} 人`;
-        renderOutputList(outputSpecPatientList, outputState.specPatients, true);
-      } else {
-        outputSpecPatientList.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">${data.error}</div>`;
-      }
-    } catch (e) {
-      outputSpecPatientList.innerHTML = `<div class="patient-list-empty" style="color: var(--danger);">加载异常: ${e.message}</div>`;
-    }
+  function loadOutputRegularPatients() {
+    return loadOutputPatientsGroup({
+      type: "regular",
+      listEl: outputRegPatientList,
+      badgeEl: outputRegCountBadge,
+      pfxAllEl: outputRegPfxAll,
+      pfxChks: outputRegPfxChks,
+      repStartEl: outputRegReportStart,
+      repEndEl: outputRegReportEnd,
+      subStartEl: outputRegSubStart,
+      subEndEl: outputRegSubEnd,
+      loadingText: "正在加载常规已归档报告..."
+    });
+  }
+
+  function loadOutputSpecialPatients() {
+    return loadOutputPatientsGroup({
+      type: "special",
+      listEl: outputSpecPatientList,
+      badgeEl: outputSpecCountBadge,
+      pfxAllEl: outputSpecPfxAll,
+      pfxChks: outputSpecPfxChks,
+      repStartEl: outputSpecReportStart,
+      repEndEl: outputSpecReportEnd,
+      subStartEl: outputSpecSubStart,
+      subEndEl: outputSpecSubEnd,
+      loadingText: "正在加载特殊审核完成报告..."
+    });
+  }
+
+  function loadOutputIhcPatients() {
+    return loadOutputPatientsGroup({
+      type: "ihc",
+      listEl: outputIhcPatientList,
+      badgeEl: outputIhcCountBadge,
+      pfxAllEl: outputIhcPfxAll,
+      pfxChks: outputIhcPfxChks,
+      repStartEl: outputIhcReportStart,
+      repEndEl: outputIhcReportEnd,
+      subStartEl: outputIhcSubStart,
+      subEndEl: outputIhcSubEnd,
+      loadingText: "正在加载免疫组化已归档报告..."
+    });
   }
 
   // Render items in Output list
-  function renderOutputList(container, patients, isSpecial = false) {
+  function renderOutputList(container, patients, reportType = "regular") {
+    const isSpecial = (reportType === "special" || reportType === true);
+    const isIhc = (reportType === "ihc");
     if (!patients.length) {
       container.innerHTML = `<div class="patient-list-empty">暂无符合条件的报告单</div>`;
       return;
@@ -2692,8 +3740,15 @@ function startApp() {
       let statusBadge = "";
       if (isSpecial) {
         statusBadge = `<span class="badge-status badge-approved" style="font-size: 11px;">✓ 完成审核</span>`;
+      } else if (isIhc) {
+        statusBadge = p.archived === 2
+          ? `<span class="badge-status badge-rearchive" style="font-size: 11px;">需重新归档</span>`
+          : `<span class="badge-status badge-ihc" style="font-size: 11px;">🧪 免疫组化报告</span>`;
       } else {
         statusBadge = `<span class="badge-status badge-archived" style="font-size: 11px;">已归档</span>`;
+        if (p.is_needs_ihc === 1) {
+          statusBadge += ` <span class="badge-status badge-ihc" style="font-size: 11px;">免疫组化</span>`;
+        }
       }
 
       card.innerHTML = `
@@ -2714,20 +3769,20 @@ function startApp() {
         </div>
         <div class="output-item-actions">
           <button type="button" class="btn btn-secondary btn-sm btn-out-preview" title="直接预览当前报告">👁️ 预览</button>
-          <button type="button" class="btn btn-secondary btn-sm btn-out-word" title="在外部Word中打开报告（未归档报告\\病理报告输出）">📄 Word</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-out-word" title="在外部Word中打开报告">📄 Word</button>
           <button type="button" class="btn btn-secondary btn-sm btn-out-folder" title="在资源管理器中定位归档报告（已归档报告）">📂 归档位置</button>
           <button type="button" class="btn btn-secondary btn-sm btn-out-print" title="单独打印当前报告第一页" style="color: #0369a1; border-color: #bae6fd;">🖨️ 打印第1页</button>
           <button type="button" class="btn btn-secondary btn-sm btn-out-revoke-arch" title="撤销归档：修改数据库并从已归档报告中移除对应文件" style="color: #c2410c; border-color: #fed7aa;">↩️ 撤销归档</button>
-          <button type="button" class="btn btn-secondary btn-sm btn-out-revoke-rev" ${!isSpecial ? "disabled" : ""} title="${isSpecial ? '撤销审核：返回待审核列表并恢复对应特殊归档' : '常规报告无需审核'}" style="${isSpecial ? 'color: #9333ea; border-color: #e9d5ff;' : 'opacity: 0.5; cursor: not-allowed;'}">↩️ 撤销审核</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-out-revoke-rev" ${!isSpecial ? "disabled" : ""} title="${isSpecial ? '撤销审核：返回待审核列表并恢复对应特殊归档' : (isIhc ? '免疫组化报告无需审核' : '常规报告无需审核')}" style="${isSpecial ? 'color: #9333ea; border-color: #e9d5ff;' : 'opacity: 0.5; cursor: not-allowed;'}">↩️ 撤销审核</button>
         </div>
       `;
 
       // 1. Preview
       card.querySelector(".btn-out-preview").addEventListener("click", () => {
-        openReportPreviewModal(p.pathology_no);
+        openReportPreviewModal(p.pathology_no, isIhc ? "ihc" : "normal");
       });
 
-      // 2. Open Word from output directory
+      // 2. Open Word from output / IHC draft directory
       card.querySelector(".btn-out-word").addEventListener("click", async () => {
         const reportPath = p.final_report_path || p.word_path;
         if (reportPath) {
@@ -2747,7 +3802,7 @@ function startApp() {
           const res = await fetch("/api/output/open_archive_dir", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pathology_no: p.pathology_no })
+            body: JSON.stringify({ pathology_no: p.pathology_no, report_type: reportType })
           });
           const data = await res.json();
           if (data.success) {
@@ -2769,7 +3824,7 @@ function startApp() {
           const res = await fetch("/api/output/batch_print", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pathology_nos: [p.pathology_no] })
+            body: JSON.stringify({ pathology_nos: [p.pathology_no], report_type: reportType })
           });
           const data = await res.json();
           if (data.success) {
@@ -2791,19 +3846,24 @@ function startApp() {
 
       // 5. Revoke Archive
       card.querySelector(".btn-out-revoke-arch").addEventListener("click", async () => {
-        if (!confirm(`确定要撤销患者 [${p.name}] (病理号: ${p.pathology_no}) 的归档吗？\n撤销后将自动从“已归档报告”中移除该报告文件，并将其从本列表移出。`)) {
+        const confirmMsg = isIhc
+          ? `确定要撤销患者 [${p.name}] (病理号: ${p.pathology_no}) 的免疫组化报告归档吗？\n撤销后将自动从“已归档报告”中移除该免疫组化报告文件（不会影响原报告和“特殊患者归档\\免疫组化”目录中的草稿）。`
+          : `确定要撤销患者 [${p.name}] (病理号: ${p.pathology_no}) 的归档吗？\n撤销后将自动从“已归档报告”中移除该报告文件，并将其从本列表移出。`;
+        if (!confirm(confirmMsg)) {
           return;
         }
         try {
           const res = await fetch("/api/output/revoke_archive", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pathology_no: p.pathology_no })
+            body: JSON.stringify({ pathology_no: p.pathology_no, report_type: reportType })
           });
           const data = await res.json();
           if (data.success) {
             showToast(data.message, "success");
-            if (isSpecial) loadOutputSpecialPatients(); else loadOutputRegularPatients();
+            if (isSpecial) loadOutputSpecialPatients();
+            else if (isIhc) loadOutputIhcPatients();
+            else loadOutputRegularPatients();
           } else {
             showToast("撤销归档失败: " + data.error, "error");
           }
@@ -2842,26 +3902,72 @@ function startApp() {
     });
   }
 
-  // Filter Prefix changes
-  outputRegPrefixSelect.addEventListener("change", () => {
-    outputState.regPrefix = outputRegPrefixSelect.value;
-    loadOutputRegularPatients();
+  // Filter Prefix, Date Ranges & Refresh bindings for Output
+  bindPrefixCheckboxGroup(outputRegPfxAll, outputRegPfxChks, loadOutputRegularPatients);
+  bindPrefixCheckboxGroup(outputSpecPfxAll, outputSpecPfxChks, loadOutputSpecialPatients);
+  bindPrefixCheckboxGroup(outputIhcPfxAll, outputIhcPfxChks, loadOutputIhcPatients);
+
+  bindRangeQuickDateButtons({
+    startEl: outputRegReportStart,
+    endEl: outputRegReportEnd,
+    btnTodayEl: btnOutputRegRepToday,
+    btnWeekEl: btnOutputRegRepWeek,
+    btnMonthEl: btnOutputRegRepMonth,
+    btnAllEl: btnOutputRegRepAll,
+    onReload: loadOutputRegularPatients
+  });
+  bindRangeQuickDateButtons({
+    startEl: outputRegSubStart,
+    endEl: outputRegSubEnd,
+    btnAllEl: btnOutputRegSubAll,
+    onReload: loadOutputRegularPatients
   });
 
-  outputSpecPrefixSelect.addEventListener("change", () => {
-    outputState.specPrefix = outputSpecPrefixSelect.value;
-    loadOutputSpecialPatients();
+  bindRangeQuickDateButtons({
+    startEl: outputSpecReportStart,
+    endEl: outputSpecReportEnd,
+    btnTodayEl: btnOutputSpecRepToday,
+    btnWeekEl: btnOutputSpecRepWeek,
+    btnMonthEl: btnOutputSpecRepMonth,
+    btnAllEl: btnOutputSpecRepAll,
+    onReload: loadOutputSpecialPatients
+  });
+  bindRangeQuickDateButtons({
+    startEl: outputSpecSubStart,
+    endEl: outputSpecSubEnd,
+    btnAllEl: btnOutputSpecSubAll,
+    onReload: loadOutputSpecialPatients
   });
 
+  bindRangeQuickDateButtons({
+    startEl: outputIhcReportStart,
+    endEl: outputIhcReportEnd,
+    btnTodayEl: btnOutputIhcRepToday,
+    btnWeekEl: btnOutputIhcRepWeek,
+    btnMonthEl: btnOutputIhcRepMonth,
+    btnAllEl: btnOutputIhcRepAll,
+    onReload: loadOutputIhcPatients
+  });
+  bindRangeQuickDateButtons({
+    startEl: outputIhcSubStart,
+    endEl: outputIhcSubEnd,
+    btnAllEl: btnOutputIhcSubAll,
+    onReload: loadOutputIhcPatients
+  });
+
+  if (btnOutputRegQuery) btnOutputRegQuery.addEventListener("click", loadOutputRegularPatients);
+  if (btnOutputSpecQuery) btnOutputSpecQuery.addEventListener("click", loadOutputSpecialPatients);
+  if (btnOutputIhcQuery) btnOutputIhcQuery.addEventListener("click", loadOutputIhcPatients);
   btnRefreshOutputReg.addEventListener("click", loadOutputRegularPatients);
   btnRefreshOutputSpec.addEventListener("click", loadOutputSpecialPatients);
+  if (btnRefreshOutputIhc) btnRefreshOutputIhc.addEventListener("click", loadOutputIhcPatients);
 
-  async function runBatchPrintToday(reportType, prefixSelect, btnEl, emptyMsg, confirmLabel) {
+  async function runBatchPrintToday(reportType, pfxAllEl, pfxChks, btnEl, emptyMsg, confirmLabel) {
     btnEl.disabled = true;
     btnEl.innerHTML = `<span>⏳ 正在检索今日报告...</span>`;
     try {
-      const pfx = prefixSelect.value;
-      const res = await fetch(`/api/output/patients?type=${encodeURIComponent(reportType)}&prefix=${encodeURIComponent(pfx)}&today_only=1`);
+      const pfx = getPrefixGroupParam(pfxAllEl, pfxChks);
+      const res = await fetch(`/api/output/patients?type=${encodeURIComponent(reportType)}&prefixes=${encodeURIComponent(pfx)}&today_only=1`);
       const data = await res.json();
       const todayList = data.patients || [];
 
@@ -2877,7 +3983,7 @@ function startApp() {
       const printRes = await fetch("/api/output/batch_print", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pathology_nos: todayList.map(p => p.pathology_no) })
+        body: JSON.stringify({ pathology_nos: todayList.map(p => p.pathology_no), report_type: reportType })
       });
       const printData = await printRes.json();
       if (printData.success && printData.direct_printed) {
@@ -2895,13 +4001,20 @@ function startApp() {
 
   // Batch Print Today Regular
   btnOutputRegPrintToday.addEventListener("click", () => {
-    runBatchPrintToday("regular", outputRegPrefixSelect, btnOutputRegPrintToday, "未找到今日已归档的常规报告单", "已归档常规报告");
+    runBatchPrintToday("regular", outputRegPfxAll, outputRegPfxChks, btnOutputRegPrintToday, "未找到今日已归档的常规报告单", "已归档常规报告");
   });
 
   // Batch Print Today Special
   btnOutputSpecPrintToday.addEventListener("click", () => {
-    runBatchPrintToday("special", outputSpecPrefixSelect, btnOutputSpecPrintToday, "未找到今日已归档的特殊审核完成报告", "特殊审核完成报告");
+    runBatchPrintToday("special", outputSpecPfxAll, outputSpecPfxChks, btnOutputSpecPrintToday, "未找到今日已归档的特殊审核完成报告", "特殊审核完成报告");
   });
+
+  // Batch Print Today IHC
+  if (btnOutputIhcPrintToday) {
+    btnOutputIhcPrintToday.addEventListener("click", () => {
+      runBatchPrintToday("ihc", outputIhcPfxAll, outputIhcPfxChks, btnOutputIhcPrintToday, "未找到今日已归档的免疫组化报告", "已归档免疫组化报告");
+    });
+  }
 
   // ==========================================================
   // Phase 3.2: Signing Sheet Workspace (3.2 报告领取签名单)
@@ -2911,15 +4024,19 @@ function startApp() {
     generatedFilePath: null,
     generatedFilename: null,
     generatedWordPath: null,
-    generatedWordFilename: null
+    generatedWordFilename: null,
+    defaultsInitialized: false
   };
 
+  const signingReportStartDate = document.getElementById("signing-report-start-date");
+  const signingReportEndDate = document.getElementById("signing-report-end-date");
   const signingStartDate = document.getElementById("signing-start-date");
   const signingEndDate = document.getElementById("signing-end-date");
   const btnSigningDateToday = document.getElementById("btn-signing-date-today");
   const btnSigningDateWeek = document.getElementById("btn-signing-date-week");
   const btnSigningDateMonth = document.getElementById("btn-signing-date-month");
   const btnSigningDateAll = document.getElementById("btn-signing-date-all");
+  const btnSigningSubAll = document.getElementById("btn-signing-sub-all");
 
   const pfxChkAll = document.getElementById("pfx-chk-all");
   const pfxItemChks = document.querySelectorAll(".pfx-item-chk");
@@ -2939,66 +4056,36 @@ function startApp() {
   const signingPreviewContainer = document.getElementById("signing-preview-container");
 
   function initSigningDateRange() {
-    if (!signingStartDate.value && !signingEndDate.value) {
-      const today = new Date().toISOString().split("T")[0];
-      signingStartDate.value = today;
-      signingEndDate.value = today;
+    if (!signingState.defaultsInitialized && signingReportStartDate && signingReportEndDate) {
+      const today = getTodayDateStr();
+      signingReportStartDate.value = today;
+      signingReportEndDate.value = today;
+      signingState.defaultsInitialized = true;
     }
   }
 
-  // Quick date range buttons
-  btnSigningDateToday.addEventListener("click", () => {
-    const today = new Date().toISOString().split("T")[0];
-    signingStartDate.value = today;
-    signingEndDate.value = today;
-    loadSigningCandidates();
+  // Quick date range buttons (Report date: 今日/本周/本月/全部; Submission date: 全部)
+  bindRangeQuickDateButtons({
+    startEl: signingReportStartDate,
+    endEl: signingReportEndDate,
+    btnTodayEl: btnSigningDateToday,
+    btnWeekEl: btnSigningDateWeek,
+    btnMonthEl: btnSigningDateMonth,
+    btnAllEl: btnSigningDateAll,
+    onReload: loadSigningCandidates
   });
-
-  btnSigningDateWeek.addEventListener("click", () => {
-    const now = new Date();
-    const day = now.getDay() || 7;
-    const monday = new Date(now);
-    monday.setDate(now.getDate() - day + 1);
-    signingStartDate.value = monday.toISOString().split("T")[0];
-    signingEndDate.value = now.toISOString().split("T")[0];
-    loadSigningCandidates();
-  });
-
-  btnSigningDateMonth.addEventListener("click", () => {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    signingStartDate.value = firstDay.toISOString().split("T")[0];
-    signingEndDate.value = now.toISOString().split("T")[0];
-    loadSigningCandidates();
-  });
-
-  btnSigningDateAll.addEventListener("click", () => {
-    signingStartDate.value = "";
-    signingEndDate.value = "";
-    loadSigningCandidates();
+  bindRangeQuickDateButtons({
+    startEl: signingStartDate,
+    endEl: signingEndDate,
+    btnAllEl: btnSigningSubAll,
+    onReload: loadSigningCandidates
   });
 
   // Prefix checkbox synchronization
-  pfxChkAll.addEventListener("change", () => {
-    pfxItemChks.forEach(chk => chk.checked = pfxChkAll.checked);
-  });
-
-  pfxItemChks.forEach(chk => {
-    chk.addEventListener("change", () => {
-      const allChecked = Array.from(pfxItemChks).every(c => c.checked);
-      pfxChkAll.checked = allChecked;
-    });
-  });
+  bindPrefixCheckboxGroup(pfxChkAll, pfxItemChks);
 
   function getSelectedPrefixesParam() {
-    if (pfxChkAll.checked) {
-      return "ALL";
-    }
-    const sel = [];
-    pfxItemChks.forEach(c => {
-      if (c.checked) sel.push(c.value);
-    });
-    return sel.join(",");
+    return getPrefixGroupParam(pfxChkAll, pfxItemChks);
   }
 
   // Load Candidates
@@ -3007,11 +4094,15 @@ function startApp() {
       signingCandidatesTbody.innerHTML = `
         <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 30px;">正在检索数据库患者记录...</td></tr>
       `;
+      const repS = signingReportStartDate ? signingReportStartDate.value : "";
+      const repE = signingReportEndDate ? signingReportEndDate.value : "";
       const sDate = signingStartDate.value;
       const eDate = signingEndDate.value;
       const pfxParam = getSelectedPrefixesParam();
 
       const params = new URLSearchParams();
+      if (repS) params.set("report_start_date", repS);
+      if (repE) params.set("report_end_date", repE);
       if (sDate) params.set("start_date", sDate);
       if (eDate) params.set("end_date", eDate);
       if (pfxParam) params.set("prefixes", pfxParam);
@@ -3088,7 +4179,9 @@ function startApp() {
         body: JSON.stringify({
           pathology_nos: selectedNos,
           start_date: signingStartDate.value,
-          end_date: signingEndDate.value
+          end_date: signingEndDate.value,
+          report_start_date: signingReportStartDate ? signingReportStartDate.value : "",
+          report_end_date: signingReportEndDate ? signingReportEndDate.value : ""
         })
       });
       const data = await res.json();

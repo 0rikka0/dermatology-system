@@ -59,6 +59,33 @@ CREATE INDEX IF NOT EXISTS idx_patients_review ON patients(review_status);
 CREATE INDEX IF NOT EXISTS idx_patients_archived ON patients(archived);
 """
 
+CREATE_IHC_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS ihc_reports (
+    pathology_no TEXT PRIMARY KEY,
+    ihc_created INTEGER DEFAULT 0,
+    ihc_dir TEXT DEFAULT '',
+    ihc_doc_path TEXT DEFAULT '',
+    ihc_photo_dir TEXT DEFAULT '',
+    source_archive_path TEXT DEFAULT '',
+    source_archive_filename TEXT DEFAULT '',
+    report_doctor TEXT DEFAULT '',
+    review_doctor TEXT DEFAULT '',
+    report_date TEXT DEFAULT '',
+    report_date_raw TEXT DEFAULT '',
+    microscopic_desc TEXT DEFAULT '',
+    pathology_diag TEXT DEFAULT '',
+    selected_images TEXT DEFAULT '[]',
+    image_count INTEGER DEFAULT 1,
+    biopsy_sites TEXT DEFAULT '[]',
+    archived INTEGER DEFAULT 0,
+    archive_file TEXT DEFAULT '',
+    created_at TEXT DEFAULT '',
+    updated_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ihc_rep_date ON ihc_reports(report_date_raw);
+CREATE INDEX IF NOT EXISTS idx_ihc_archived ON ihc_reports(archived);
+"""
+
 def get_connection(db_path, timeout=15.0):
     """Get SQLite database connection with row factory and busy timeout."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -81,6 +108,7 @@ def init_db(db_path):
             pass
         cursor.execute(CREATE_TABLE_SQL)
         cursor.executescript(CREATE_INDEX_SQL)
+        cursor.executescript(CREATE_IHC_TABLE_SQL)
         
         # Check and migrate columns if upgrading existing db
         cursor.execute("PRAGMA table_info(patients)")
@@ -381,6 +409,11 @@ def update_patient(db_path, old_pathology_no, data):
             now_str,
             old_p
         ))
+        if new_p != old_p:
+            cursor.execute(
+                "UPDATE ihc_reports SET pathology_no = ?, updated_at = ? WHERE pathology_no = ?",
+                (new_p, now_str, old_p)
+            )
         conn.commit()
     return get_patient(db_path, new_p)
 
@@ -405,10 +438,13 @@ def update_patient_report_making(db_path, pathology_no, data):
     is_recut = 1 if data.get("is_needs_recut") else 0
 
     # Calculate review_status
-    fallback_status = data.get("review_status", existing.get("review_status", "已制作") if existing else "已制作")
-    if not (is_pending or is_ihc or is_recut) and existing and existing.get("review_status") in ("待审核", "免疫组化", "重切", "待审核/免疫组化", "待审核/重切", "免疫组化/重切", "待审核/免疫组化/重切"):
-        fallback_status = "未审核"
-    rev_status = build_review_status(is_pending, is_ihc, is_recut, fallback=fallback_status)
+    if existing and existing.get("review_status") == "完成审核" and not (is_pending or is_recut):
+        rev_status = "完成审核"
+    else:
+        fallback_status = data.get("review_status", existing.get("review_status", "已制作") if existing else "已制作")
+        if not (is_pending or is_ihc or is_recut) and existing and existing.get("review_status") in ("待审核", "免疫组化", "重切", "待审核/免疫组化", "待审核/重切", "免疫组化/重切", "待审核/免疫组化/重切"):
+            fallback_status = "未审核"
+        rev_status = build_review_status(is_pending, is_ihc, is_recut, fallback=fallback_status)
 
     selected_images = data.get("selected_images", [])
     if isinstance(selected_images, str):
@@ -496,6 +532,7 @@ def delete_patient(db_path, pathology_no):
     p_no = pathology_no.strip().upper()
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
+        cursor.execute("DELETE FROM ihc_reports WHERE pathology_no = ?", (p_no,))
         cursor.execute("DELETE FROM patients WHERE pathology_no = ?", (p_no,))
         conn.commit()
     return True
@@ -532,37 +569,95 @@ def mark_patient_approved(db_path, pathology_no):
         conn.commit()
     return get_patient(db_path, p_no)
 
-def get_today_patients(db_path, today_raw=None):
-    """Retrieve patients created or reported today."""
-    if not today_raw:
-        today_raw = datetime.now().strftime("%Y-%m-%d")
+SUB_DATE_EXPR = "COALESCE(NULLIF(submission_date_raw, ''), NULLIF(report_date_raw, ''), substr(created_at, 1, 10))"
+REP_DATE_EXPR = "COALESCE(NULLIF(report_date_raw, ''), substr(created_at, 1, 10))"
 
-    with get_connection(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM patients
-            WHERE report_date_raw = ? OR created_at LIKE ?
-            ORDER BY created_at DESC, pathology_no DESC
-        """, (today_raw, f"{today_raw}%"))
-        rows = cursor.fetchall()
-        return [patient_row_to_dict(r) for r in rows]
 
-def get_patients_for_report_making(db_path, date_raw=None, keyword=None):
+def _append_date_filter(conditions, values, date_expr, single_date=None, start_date=None, end_date=None):
+    """Append single-date or inclusive date-range SQL conditions for date_expr."""
+    single = str(single_date or "").strip()
+    if single:
+        conditions.append(f"({date_expr} = ?)")
+        values.append(single)
+        return
+    s_date = str(start_date or "").strip()
+    e_date = str(end_date or "").strip()
+    if s_date and e_date:
+        conditions.append(f"({date_expr} BETWEEN ? AND ?)")
+        values.extend([s_date, e_date])
+    elif s_date:
+        conditions.append(f"({date_expr} >= ?)")
+        values.append(s_date)
+    elif e_date:
+        conditions.append(f"({date_expr} <= ?)")
+        values.append(e_date)
+
+
+def _append_prefix_filter(conditions, values, prefix=None, prefixes=None):
+    """Append single-prefix or multi-prefix SQL conditions."""
+    if prefixes is not None:
+        if "ALL" in prefixes or "所有" in prefixes:
+            return
+        prefix_conds = []
+        for pfx in prefixes:
+            pfx_clean = str(pfx).strip().upper()
+            if pfx_clean in ("", "NONE", "普通", "无前缀"):
+                prefix_conds.append("(prefix = '' OR prefix IS NULL)")
+            else:
+                prefix_conds.append("UPPER(prefix) = ?")
+                values.append(pfx_clean)
+        if prefix_conds:
+            conditions.append("(" + " OR ".join(prefix_conds) + ")")
+        else:
+            # Empty non-None list explicitly checked -> match nothing
+            conditions.append("1 = 0")
+        return
+
+    pfx_val = str(prefix or "").strip().upper()
+    if pfx_val and pfx_val not in ("ALL", "所有"):
+        if pfx_val in ("NONE", "普通", "无前缀"):
+            conditions.append("(prefix = '' OR prefix IS NULL)")
+        else:
+            conditions.append("UPPER(prefix) = ?")
+            values.append(pfx_val)
+
+
+def _append_keyword_filter(conditions, values, keyword=None, full_fields=False):
+    """Append keyword LIKE filter across patient name, pathology_no, and key fields."""
+    kw = str(keyword or "").strip()
+    if not kw:
+        return
+    kw_like = f"%{kw}%"
+    if full_fields:
+        conditions.append(
+            "(name LIKE ? OR pathology_no LIKE ? OR inpatient_no LIKE ? OR outpatient_no LIKE ? "
+            "OR clinical_diagnosis LIKE ? OR biopsy_sites LIKE ? OR referring_doctor LIKE ? OR pathology_diag LIKE ?)"
+        )
+        values.extend([kw_like] * 8)
+    else:
+        conditions.append(
+            "(name LIKE ? OR pathology_no LIKE ? OR inpatient_no LIKE ? OR outpatient_no LIKE ? "
+            "OR clinical_diagnosis LIKE ? OR pathology_diag LIKE ?)"
+        )
+        values.extend([kw_like] * 6)
+
+
+def get_today_patients(db_path, today_raw=None, report_date=None, submission_date=None, keyword=None):
     """
-    Retrieve patients for Report Making workspace.
-    Filterable by date and search keyword.
+    Retrieve patients for the Entry workspace patient list.
+    When called with no explicit filter parameters, defaults to today's report date.
+    Passing report_date="" explicitly disables the report date filter (all dates).
     """
     conditions = []
     values = []
 
-    if date_raw:
-        conditions.append("(report_date_raw = ? OR submission_date_raw = ? OR created_at LIKE ?)")
-        values.extend([date_raw, date_raw, f"{date_raw}%"])
-
-    if keyword:
-        kw_like = f"%{keyword.strip()}%"
-        conditions.append("(name LIKE ? OR pathology_no LIKE ? OR inpatient_no LIKE ? OR outpatient_no LIKE ? OR clinical_diagnosis LIKE ? OR pathology_diag LIKE ?)")
-        values.extend([kw_like, kw_like, kw_like, kw_like, kw_like, kw_like])
+    if report_date is None and submission_date is None and keyword is None:
+        effective_rep = today_raw or datetime.now().strftime("%Y-%m-%d")
+        _append_date_filter(conditions, values, REP_DATE_EXPR, single_date=effective_rep)
+    else:
+        _append_date_filter(conditions, values, REP_DATE_EXPR, single_date=report_date)
+        _append_date_filter(conditions, values, SUB_DATE_EXPR, single_date=submission_date)
+        _append_keyword_filter(conditions, values, keyword=keyword)
 
     sql = "SELECT * FROM patients"
     if conditions:
@@ -575,31 +670,349 @@ def get_patients_for_report_making(db_path, date_raw=None, keyword=None):
         rows = cursor.fetchall()
         return [patient_row_to_dict(r) for r in rows]
 
-def get_patients_for_review(db_path, include_approved=False):
+
+def get_patients_for_report_making(db_path, date_raw=None, keyword=None, report_date=None, submission_date=None):
     """
-    Retrieve patients for Report Review workspace.
-    Includes pending review and IHC patients.
+    Retrieve patients for Report Making workspace.
+    Supports filtering by report_date, submission_date, and search keyword.
     """
+    conditions = []
+    values = []
+
+    if report_date is not None or submission_date is not None:
+        _append_date_filter(conditions, values, REP_DATE_EXPR, single_date=report_date)
+        _append_date_filter(conditions, values, SUB_DATE_EXPR, single_date=submission_date)
+    elif date_raw:
+        conditions.append("(report_date_raw = ? OR submission_date_raw = ? OR created_at LIKE ?)")
+        values.extend([date_raw, date_raw, f"{date_raw}%"])
+
+    _append_keyword_filter(conditions, values, keyword=keyword)
+
+    sql = "SELECT * FROM patients"
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY pathology_no ASC LIMIT 200"
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
-        if include_approved:
-            cursor.execute("""
-                SELECT * FROM patients
-                WHERE is_pending_review = 1 OR is_needs_ihc = 1 OR is_needs_recut = 1
-                   OR review_status LIKE '%待审核%' OR review_status LIKE '%免疫组化%' OR review_status LIKE '%重切%'
-                   OR review_status = '完成审核'
-                ORDER BY updated_at DESC, pathology_no DESC
-            """)
-        else:
-            cursor.execute("""
-                SELECT * FROM patients
-                WHERE (is_pending_review = 1 OR is_needs_ihc = 1 OR is_needs_recut = 1
-                   OR review_status LIKE '%待审核%' OR review_status LIKE '%免疫组化%' OR review_status LIKE '%重切%')
-                  AND review_status != '完成审核'
-                ORDER BY updated_at DESC, pathology_no DESC
-            """)
+        cursor.execute(sql, values)
         rows = cursor.fetchall()
         return [patient_row_to_dict(r) for r in rows]
+
+
+def get_patients_for_review(db_path, include_approved=False, report_date=None, submission_date=None, keyword=None):
+    """
+    Retrieve patients for Report Review workspace.
+    Includes pending review and recut patients (excluding pure IHC patients),
+    filterable by report/submission dates and keyword.
+    """
+    if include_approved:
+        conditions = [
+            "(is_pending_review = 1 OR is_needs_recut = 1 "
+            "OR review_status LIKE '%待审核%' OR review_status LIKE '%重切%' "
+            "OR review_status = '完成审核')"
+        ]
+    else:
+        conditions = [
+            "(is_pending_review = 1 OR is_needs_recut = 1 "
+            "OR review_status LIKE '%待审核%' OR review_status LIKE '%重切%')",
+            "review_status != '完成审核'"
+        ]
+    values = []
+
+    _append_date_filter(conditions, values, REP_DATE_EXPR, single_date=report_date)
+    _append_date_filter(conditions, values, SUB_DATE_EXPR, single_date=submission_date)
+    _append_keyword_filter(conditions, values, keyword=keyword)
+
+    sql = "SELECT * FROM patients WHERE " + " AND ".join(conditions) + " ORDER BY pathology_no ASC"
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql, values)
+        rows = cursor.fetchall()
+        return [patient_row_to_dict(r) for r in rows]
+
+
+def ihc_row_to_dict(row):
+    """Convert SQLite ihc_reports row to dictionary, parsing JSON fields."""
+    if not row:
+        return None
+    d = dict(row)
+    if isinstance(d.get("biopsy_sites"), str):
+        try:
+            d["biopsy_sites"] = json.loads(d["biopsy_sites"])
+        except Exception:
+            d["biopsy_sites"] = [d["biopsy_sites"]] if d["biopsy_sites"] else []
+    if isinstance(d.get("selected_images"), str):
+        try:
+            d["selected_images"] = json.loads(d["selected_images"])
+        except Exception:
+            d["selected_images"] = []
+    return d
+
+
+def get_ihc_report(db_path, pathology_no):
+    """Retrieve the independent IHC report record for a patient."""
+    p_no = str(pathology_no or "").strip().upper()
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM ihc_reports WHERE pathology_no = ?", (p_no,))
+        return ihc_row_to_dict(cursor.fetchone())
+
+
+def upsert_ihc_report(db_path, pathology_no, data, mode="create"):
+    """Create or update an independent IHC report record without altering patients table."""
+    p_no = str(pathology_no or "").strip().upper()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    existing = get_ihc_report(db_path, p_no)
+
+    biopsy_sites = data.get("biopsy_sites")
+    if biopsy_sites is None:
+        biopsy_sites = existing.get("biopsy_sites", []) if existing else []
+    elif isinstance(biopsy_sites, str):
+        try:
+            biopsy_sites = json.loads(biopsy_sites)
+        except Exception:
+            biopsy_sites = [s.strip() for s in biopsy_sites.split(";") if s.strip()]
+
+    selected_images = data.get("selected_images")
+    if selected_images is None:
+        selected_images = existing.get("selected_images", []) if existing else []
+    elif isinstance(selected_images, str):
+        try:
+            selected_images = json.loads(selected_images)
+        except Exception:
+            selected_images = []
+
+    if mode == "save" and existing:
+        arch_val = 2 if existing.get("archived", 0) in (1, 2) else 0
+        arch_file = existing.get("archive_file", "")
+    else:
+        arch_val = int(data.get("archived", 0))
+        arch_file = str(data.get("archive_file", "")).strip()
+
+    ihc_created = int(data.get("ihc_created", existing.get("ihc_created", 1) if existing else 1))
+    ihc_dir = str(data.get("ihc_dir", existing.get("ihc_dir", "") if existing else "")).strip()
+    ihc_doc_path = str(data.get("ihc_doc_path", existing.get("ihc_doc_path", "") if existing else "")).strip()
+    ihc_photo_dir = str(data.get("ihc_photo_dir", existing.get("ihc_photo_dir", "") if existing else "")).strip()
+    src_arch_path = str(data.get("source_archive_path", existing.get("source_archive_path", "") if existing else "")).strip()
+    src_arch_name = str(data.get("source_archive_filename", existing.get("source_archive_filename", "") if existing else "")).strip()
+
+    rep_doc = str(data.get("report_doctor", existing.get("report_doctor", "") if existing else "")).strip()
+    rev_doc = str(data.get("review_doctor", existing.get("review_doctor", "") if existing else "")).strip()
+    rep_date = str(data.get("report_date", existing.get("report_date", "") if existing else "")).strip()
+    rep_date_raw = str(data.get("report_date_raw", existing.get("report_date_raw", "") if existing else "")).strip()
+    micro_desc = str(data.get("microscopic_desc", existing.get("microscopic_desc", "") if existing else "")).strip()
+    patho_diag = str(data.get("pathology_diag", existing.get("pathology_diag", "") if existing else "")).strip()
+    img_cnt = int(data.get("image_count", existing.get("image_count", 1) if existing else 1) or 1)
+    created_at = existing.get("created_at", now_str) if existing else now_str
+
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO ihc_reports (
+                pathology_no, ihc_created, ihc_dir, ihc_doc_path, ihc_photo_dir,
+                source_archive_path, source_archive_filename,
+                report_doctor, review_doctor, report_date, report_date_raw,
+                microscopic_desc, pathology_diag, selected_images, image_count, biopsy_sites,
+                archived, archive_file, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pathology_no) DO UPDATE SET
+                ihc_created = excluded.ihc_created,
+                ihc_dir = excluded.ihc_dir,
+                ihc_doc_path = excluded.ihc_doc_path,
+                ihc_photo_dir = excluded.ihc_photo_dir,
+                source_archive_path = excluded.source_archive_path,
+                source_archive_filename = excluded.source_archive_filename,
+                report_doctor = excluded.report_doctor,
+                review_doctor = excluded.review_doctor,
+                report_date = excluded.report_date,
+                report_date_raw = excluded.report_date_raw,
+                microscopic_desc = excluded.microscopic_desc,
+                pathology_diag = excluded.pathology_diag,
+                selected_images = excluded.selected_images,
+                image_count = excluded.image_count,
+                biopsy_sites = excluded.biopsy_sites,
+                archived = excluded.archived,
+                archive_file = excluded.archive_file,
+                updated_at = excluded.updated_at
+        """, (
+            p_no, ihc_created, ihc_dir, ihc_doc_path, ihc_photo_dir,
+            src_arch_path, src_arch_name,
+            rep_doc, rev_doc, rep_date, rep_date_raw,
+            micro_desc, patho_diag,
+            json.dumps(selected_images, ensure_ascii=False),
+            img_cnt,
+            json.dumps(biopsy_sites, ensure_ascii=False),
+            arch_val, arch_file, created_at, now_str
+        ))
+        conn.commit()
+    return get_ihc_report(db_path, p_no)
+
+
+def mark_ihc_archived(db_path, pathology_no, archive_file):
+    """Mark an IHC report as archived in ihc_reports table."""
+    p_no = str(pathology_no or "").strip().upper()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE ihc_reports SET
+                archived = 1,
+                archive_file = ?,
+                updated_at = ?
+            WHERE pathology_no = ?
+        """, (archive_file, now_str, p_no))
+        conn.commit()
+    return get_ihc_report(db_path, p_no)
+
+
+def revoke_ihc_archive_db(db_path, pathology_no):
+    """Revoke archive status of an IHC report in ihc_reports table."""
+    p_no = str(pathology_no or "").strip().upper()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE ihc_reports SET
+                archived = 0,
+                archive_file = '',
+                updated_at = ?
+            WHERE pathology_no = ?
+        """, (now_str, p_no))
+        conn.commit()
+    return get_ihc_report(db_path, p_no)
+
+
+def update_ihc_paths(db_path, pathology_no, ihc_dir, ihc_doc_path, ihc_photo_dir,
+                     selected_images=None, mark_rearchive=False):
+    """Update IHC directory/document/photo paths after patient rename."""
+    p_no = str(pathology_no or "").strip().upper()
+    existing = get_ihc_report(db_path, p_no)
+    if not existing:
+        return None
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    arch_val = existing.get("archived", 0)
+    if mark_rearchive and arch_val in (1, 2):
+        arch_val = 2
+    sel_imgs = selected_images if selected_images is not None else existing.get("selected_images", [])
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE ihc_reports SET
+                ihc_dir = ?,
+                ihc_doc_path = ?,
+                ihc_photo_dir = ?,
+                selected_images = ?,
+                archived = ?,
+                updated_at = ?
+            WHERE pathology_no = ?
+        """, (
+            ihc_dir,
+            ihc_doc_path,
+            ihc_photo_dir,
+            json.dumps(sel_imgs, ensure_ascii=False),
+            int(arch_val),
+            now_str,
+            p_no
+        ))
+        conn.commit()
+    return get_ihc_report(db_path, p_no)
+
+
+def _extract_joined_ihc_dict(row_dict):
+    """Pop ihc_* aliased columns from joined query row into a nested ihc_report dict."""
+    ihc_keys = {
+        "ihc_created": "ihc_created",
+        "ihc_dir": "ihc_dir",
+        "ihc_doc_path": "ihc_doc_path",
+        "ihc_photo_dir": "ihc_photo_dir",
+        "ihc_source_archive_path": "source_archive_path",
+        "ihc_source_archive_filename": "source_archive_filename",
+        "ihc_report_doctor": "report_doctor",
+        "ihc_review_doctor": "review_doctor",
+        "ihc_report_date": "report_date",
+        "ihc_report_date_raw": "report_date_raw",
+        "ihc_microscopic_desc": "microscopic_desc",
+        "ihc_pathology_diag": "pathology_diag",
+        "ihc_selected_images": "selected_images",
+        "ihc_image_count": "image_count",
+        "ihc_biopsy_sites": "biopsy_sites",
+        "ihc_archived": "archived",
+        "ihc_archive_file": "archive_file"
+    }
+    ihc = {}
+    for alias, target in ihc_keys.items():
+        if alias in row_dict:
+            ihc[target] = row_dict.pop(alias)
+    ihc["pathology_no"] = row_dict.get("pathology_no", "")
+    ihc["ihc_created"] = int(ihc.get("ihc_created") or 0)
+    ihc["archived"] = int(ihc.get("archived") or 0)
+    ihc["image_count"] = int(ihc.get("image_count") or row_dict.get("image_count") or 1)
+    for json_field in ("selected_images", "biopsy_sites"):
+        val = ihc.get(json_field)
+        if isinstance(val, str):
+            try:
+                ihc[json_field] = json.loads(val)
+            except Exception:
+                ihc[json_field] = []
+        elif val is None:
+            ihc[json_field] = []
+    row_dict["ihc_report"] = ihc
+    return row_dict
+
+
+def get_patients_for_ihc(db_path, report_date=None, submission_date=None, keyword=None):
+    """
+    Retrieve patients tagged with 免疫组化 (or having created IHC reports) for the IHC workspace.
+    """
+    conditions = [
+        "(p.is_needs_ihc = 1 OR p.review_status LIKE '%免疫组化%' OR COALESCE(ihc.ihc_created, 0) = 1)"
+    ]
+    values = []
+
+    ihc_rep_expr = "COALESCE(NULLIF(ihc.report_date_raw, ''), NULLIF(p.report_date_raw, ''), substr(p.created_at, 1, 10))"
+    p_sub_expr = "COALESCE(NULLIF(p.submission_date_raw, ''), NULLIF(p.report_date_raw, ''), substr(p.created_at, 1, 10))"
+    _append_date_filter(conditions, values, ihc_rep_expr, single_date=report_date)
+    _append_date_filter(conditions, values, p_sub_expr, single_date=submission_date)
+
+    kw = str(keyword or "").strip()
+    if kw:
+        kw_like = f"%{kw}%"
+        conditions.append(
+            "(p.name LIKE ? OR p.pathology_no LIKE ? OR p.inpatient_no LIKE ? OR p.outpatient_no LIKE ? "
+            "OR p.clinical_diagnosis LIKE ? OR p.pathology_diag LIKE ? OR COALESCE(ihc.pathology_diag, '') LIKE ?)"
+        )
+        values.extend([kw_like] * 7)
+
+    sql = """
+        SELECT p.*,
+               ihc.ihc_created AS ihc_created,
+               ihc.ihc_dir AS ihc_dir,
+               ihc.ihc_doc_path AS ihc_doc_path,
+               ihc.ihc_photo_dir AS ihc_photo_dir,
+               ihc.source_archive_path AS ihc_source_archive_path,
+               ihc.source_archive_filename AS ihc_source_archive_filename,
+               ihc.report_doctor AS ihc_report_doctor,
+               ihc.review_doctor AS ihc_review_doctor,
+               ihc.report_date AS ihc_report_date,
+               ihc.report_date_raw AS ihc_report_date_raw,
+               ihc.microscopic_desc AS ihc_microscopic_desc,
+               ihc.pathology_diag AS ihc_pathology_diag,
+               ihc.selected_images AS ihc_selected_images,
+               ihc.image_count AS ihc_image_count,
+               ihc.biopsy_sites AS ihc_biopsy_sites,
+               ihc.archived AS ihc_archived,
+               ihc.archive_file AS ihc_archive_file
+        FROM patients p
+        LEFT JOIN ihc_reports ihc ON p.pathology_no = ihc.pathology_no
+        WHERE """ + " AND ".join(conditions) + " ORDER BY p.pathology_no ASC"
+
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql, values)
+        rows = cursor.fetchall()
+        return [_extract_joined_ihc_dict(patient_row_to_dict(r)) for r in rows]
+
 
 def search_patients(db_path, query_params):
     """Search patients across all criteria including dates, prefix, archived and review status."""
@@ -607,27 +1020,16 @@ def search_patients(db_path, query_params):
     values = []
 
     # 1. Date range filter (by submission date)
-    start_date = query_params.get("start_date", "").strip()
-    end_date = query_params.get("end_date", "").strip()
-    date_field = "COALESCE(NULLIF(submission_date_raw, ''), NULLIF(report_date_raw, ''), substr(created_at, 1, 10))"
-    if start_date and end_date:
-        conditions.append(f"({date_field} BETWEEN ? AND ?)")
-        values.extend([start_date, end_date])
-    elif start_date:
-        conditions.append(f"({date_field} >= ?)")
-        values.append(start_date)
-    elif end_date:
-        conditions.append(f"({date_field} <= ?)")
-        values.append(end_date)
+    _append_date_filter(
+        conditions,
+        values,
+        SUB_DATE_EXPR,
+        start_date=query_params.get("start_date", ""),
+        end_date=query_params.get("end_date", "")
+    )
 
     # 2. Prefix filter
-    prefix = query_params.get("prefix", "").strip().upper()
-    if prefix and prefix not in ("ALL", "所有"):
-        if prefix in ("NONE", "普通", "无前缀"):
-            conditions.append("(prefix = '' OR prefix IS NULL)")
-        else:
-            conditions.append("UPPER(prefix) = ?")
-            values.append(prefix)
+    _append_prefix_filter(conditions, values, prefix=query_params.get("prefix", ""))
 
     # 3. Archive status filter
     archived_val = str(query_params.get("archived", "")).strip().upper()
@@ -646,7 +1048,7 @@ def search_patients(db_path, query_params):
         elif rev_status == "待审核":
             conditions.append("(review_status LIKE '%待审核%')")
         elif rev_status == "免疫组化":
-            conditions.append("(review_status LIKE '%免疫组化%')")
+            conditions.append("(review_status LIKE '%免疫组化%' OR is_needs_ihc = 1)")
         elif rev_status == "重切":
             conditions.append("(review_status LIKE '%重切%')")
         elif rev_status == "完成审核":
@@ -655,11 +1057,7 @@ def search_patients(db_path, query_params):
             conditions.append("review_status = ?")
             values.append(rev_status)
 
-    keyword = query_params.get("keyword", "").strip()
-    if keyword:
-        kw_like = f"%{keyword}%"
-        conditions.append("(name LIKE ? OR pathology_no LIKE ? OR inpatient_no LIKE ? OR outpatient_no LIKE ? OR clinical_diagnosis LIKE ? OR biopsy_sites LIKE ? OR referring_doctor LIKE ? OR pathology_diag LIKE ?)")
-        values.extend([kw_like, kw_like, kw_like, kw_like, kw_like, kw_like, kw_like, kw_like])
+    _append_keyword_filter(conditions, values, keyword=query_params.get("keyword", ""), full_fields=True)
 
     name = query_params.get("name", "").strip()
     if name:
@@ -692,34 +1090,24 @@ def search_patients(db_path, query_params):
         rows = cursor.fetchall()
         return [patient_row_to_dict(r) for r in rows]
 
-def get_output_regular_patients(db_path, prefix=None, today_only=False, today_str=None):
-    """
-    Retrieve archived regular patients (List 1 in Report Output).
-    archived in (1, 2) AND not pending review / not IHC.
-    """
+
+def _query_output_patients(db_path, base_conditions, prefix=None, today_only=False, today_str=None,
+                           prefixes=None, report_start_date=None, report_end_date=None,
+                           sub_start_date=None, sub_end_date=None):
+    """Shared helper for querying archived output lists with date-range and prefix filters."""
     if not today_str:
         today_str = datetime.now().strftime("%Y-%m-%d")
 
-    conditions = [
-        "archived IN (1, 2)",
-        "is_pending_review = 0",
-        "is_needs_ihc = 0",
-        "is_needs_recut = 0",
-        "(review_status IS NULL OR review_status IN ('', '无', '未审核', '已制作'))"
-    ]
+    conditions = list(base_conditions)
     values = []
 
-    if prefix is not None and prefix != "ALL" and prefix != "所有":
-        p_clean = str(prefix).strip().upper()
-        if p_clean in ("", "NONE", "普通"):
-            conditions.append("(prefix = '' OR prefix IS NULL)")
-        else:
-            conditions.append("prefix = ?")
-            values.append(p_clean)
+    _append_prefix_filter(conditions, values, prefix=prefix, prefixes=prefixes)
 
     if today_only:
-        conditions.append("(report_date_raw = ? OR submission_date_raw = ? OR created_at LIKE ?)")
-        values.extend([today_str, today_str, f"{today_str}%"])
+        _append_date_filter(conditions, values, REP_DATE_EXPR, single_date=today_str)
+    else:
+        _append_date_filter(conditions, values, REP_DATE_EXPR, start_date=report_start_date, end_date=report_end_date)
+        _append_date_filter(conditions, values, SUB_DATE_EXPR, start_date=sub_start_date, end_date=sub_end_date)
 
     sql = "SELECT * FROM patients WHERE " + " AND ".join(conditions) + " ORDER BY pathology_no DESC"
     with get_connection(db_path) as conn:
@@ -727,37 +1115,131 @@ def get_output_regular_patients(db_path, prefix=None, today_only=False, today_st
         cursor.execute(sql, values)
         return [patient_row_to_dict(r) for r in cursor.fetchall()]
 
-def get_output_special_approved_patients(db_path, prefix=None, today_only=False, today_str=None):
+
+def get_output_regular_patients(db_path, prefix=None, today_only=False, today_str=None,
+                                prefixes=None, report_start_date=None, report_end_date=None,
+                                sub_start_date=None, sub_end_date=None):
+    """
+    Retrieve archived regular patients (List 1 in Report Output).
+    archived in (1, 2) AND not pending review / not recut (IHC-only patients follow regular flow).
+    """
+    base_conditions = [
+        "archived IN (1, 2)",
+        "is_pending_review = 0",
+        "is_needs_recut = 0",
+        "(review_status IS NULL OR review_status IN ('', '无', '未审核', '已制作', '免疫组化'))"
+    ]
+    return _query_output_patients(
+        db_path, base_conditions, prefix=prefix, today_only=today_only, today_str=today_str,
+        prefixes=prefixes, report_start_date=report_start_date, report_end_date=report_end_date,
+        sub_start_date=sub_start_date, sub_end_date=sub_end_date
+    )
+
+
+def get_output_special_approved_patients(db_path, prefix=None, today_only=False, today_str=None,
+                                         prefixes=None, report_start_date=None, report_end_date=None,
+                                         sub_start_date=None, sub_end_date=None):
     """
     Retrieve archived approved special patients (List 2 in Report Output).
     archived in (1, 2) AND review_status == '完成审核'.
     """
-    if not today_str:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-
-    conditions = [
+    base_conditions = [
         "archived IN (1, 2)",
         "review_status = '完成审核'"
     ]
+    return _query_output_patients(
+        db_path, base_conditions, prefix=prefix, today_only=today_only, today_str=today_str,
+        prefixes=prefixes, report_start_date=report_start_date, report_end_date=report_end_date,
+        sub_start_date=sub_start_date, sub_end_date=sub_end_date
+    )
+
+
+def get_output_ihc_patients(db_path, prefix=None, today_only=False, today_str=None,
+                            prefixes=None, report_start_date=None, report_end_date=None,
+                            sub_start_date=None, sub_end_date=None):
+    """
+    Retrieve archived independent IHC reports (List 3 in Report Output).
+    """
+    if not today_str:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+    conditions = ["ihc.archived IN (1, 2)"]
     values = []
 
-    if prefix is not None and prefix != "ALL" and prefix != "所有":
-        p_clean = str(prefix).strip().upper()
-        if p_clean in ("", "NONE", "普通"):
-            conditions.append("(prefix = '' OR prefix IS NULL)")
-        else:
-            conditions.append("prefix = ?")
-            values.append(p_clean)
+    if prefixes is not None:
+        if "ALL" not in prefixes and "所有" not in prefixes:
+            prefix_conds = []
+            for pfx in prefixes:
+                pfx_clean = str(pfx).strip().upper()
+                if pfx_clean in ("", "NONE", "普通", "无前缀"):
+                    prefix_conds.append("(p.prefix = '' OR p.prefix IS NULL)")
+                else:
+                    prefix_conds.append("UPPER(p.prefix) = ?")
+                    values.append(pfx_clean)
+            if prefix_conds:
+                conditions.append("(" + " OR ".join(prefix_conds) + ")")
+            else:
+                conditions.append("1 = 0")
+    else:
+        pfx_val = str(prefix or "").strip().upper()
+        if pfx_val and pfx_val not in ("ALL", "所有"):
+            if pfx_val in ("NONE", "普通", "无前缀"):
+                conditions.append("(p.prefix = '' OR p.prefix IS NULL)")
+            else:
+                conditions.append("UPPER(p.prefix) = ?")
+                values.append(pfx_val)
 
+    ihc_rep_expr = "COALESCE(NULLIF(ihc.report_date_raw, ''), NULLIF(p.report_date_raw, ''), substr(p.created_at, 1, 10))"
+    p_sub_expr = "COALESCE(NULLIF(p.submission_date_raw, ''), NULLIF(p.report_date_raw, ''), substr(p.created_at, 1, 10))"
     if today_only:
-        conditions.append("(report_date_raw = ? OR submission_date_raw = ? OR created_at LIKE ?)")
-        values.extend([today_str, today_str, f"{today_str}%"])
+        _append_date_filter(conditions, values, ihc_rep_expr, single_date=today_str)
+    else:
+        _append_date_filter(conditions, values, ihc_rep_expr, start_date=report_start_date, end_date=report_end_date)
+        _append_date_filter(conditions, values, p_sub_expr, start_date=sub_start_date, end_date=sub_end_date)
 
-    sql = "SELECT * FROM patients WHERE " + " AND ".join(conditions) + " ORDER BY pathology_no DESC"
+    sql = """
+        SELECT p.*,
+               ihc.ihc_created AS ihc_created,
+               ihc.ihc_dir AS ihc_dir,
+               ihc.ihc_doc_path AS ihc_doc_path,
+               ihc.ihc_photo_dir AS ihc_photo_dir,
+               ihc.source_archive_path AS ihc_source_archive_path,
+               ihc.source_archive_filename AS ihc_source_archive_filename,
+               ihc.report_doctor AS ihc_report_doctor,
+               ihc.review_doctor AS ihc_review_doctor,
+               ihc.report_date AS ihc_report_date,
+               ihc.report_date_raw AS ihc_report_date_raw,
+               ihc.microscopic_desc AS ihc_microscopic_desc,
+               ihc.pathology_diag AS ihc_pathology_diag,
+               ihc.selected_images AS ihc_selected_images,
+               ihc.image_count AS ihc_image_count,
+               ihc.biopsy_sites AS ihc_biopsy_sites,
+               ihc.archived AS ihc_archived,
+               ihc.archive_file AS ihc_archive_file
+        FROM patients p
+        INNER JOIN ihc_reports ihc ON p.pathology_no = ihc.pathology_no
+        WHERE """ + " AND ".join(conditions) + " ORDER BY p.pathology_no DESC"
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(sql, values)
-        return [patient_row_to_dict(r) for r in cursor.fetchall()]
+        rows = cursor.fetchall()
+        results = []
+        for r in rows:
+            d = _extract_joined_ihc_dict(patient_row_to_dict(r))
+            ihc = d["ihc_report"]
+            d["report_kind"] = "ihc"
+            d["report_doctor"] = ihc.get("report_doctor") or d.get("report_doctor", "")
+            d["review_doctor"] = ihc.get("review_doctor") or d.get("review_doctor", "")
+            d["report_date"] = ihc.get("report_date") or d.get("report_date", "")
+            d["report_date_raw"] = ihc.get("report_date_raw") or d.get("report_date_raw", "")
+            d["microscopic_desc"] = ihc.get("microscopic_desc", "")
+            d["pathology_diag"] = ihc.get("pathology_diag") or d.get("pathology_diag", "")
+            d["final_report_path"] = ihc.get("ihc_doc_path", "")
+            d["archive_dir"] = ihc.get("archive_file", "")
+            d["archived"] = ihc.get("archived", 0)
+            results.append(d)
+        return results
 
 def revoke_patient_archive_db(db_path, pathology_no):
     """Revoke archive status for a patient in database."""
@@ -800,36 +1282,18 @@ def revoke_patient_approval_db(db_path, pathology_no):
         conn.commit()
     return get_patient(db_path, p_no)
 
-def get_patients_for_signing_sheet(db_path, start_date=None, end_date=None, prefixes=None):
+def get_patients_for_signing_sheet(db_path, start_date=None, end_date=None, prefixes=None,
+                                   report_start_date=None, report_end_date=None):
     """
-    Retrieve patients for signing sheet based on date range and prefixes.
+    Retrieve patients for signing sheet based on submission/report date ranges and prefixes.
     Does not depend on archive or review status.
     """
     conditions = []
     values = []
 
-    if start_date and end_date:
-        conditions.append("(COALESCE(NULLIF(submission_date_raw, ''), NULLIF(report_date_raw, ''), substr(created_at, 1, 10)) BETWEEN ? AND ?)")
-        values.extend([start_date, end_date])
-    elif start_date:
-        conditions.append("(COALESCE(NULLIF(submission_date_raw, ''), NULLIF(report_date_raw, ''), substr(created_at, 1, 10)) >= ?)")
-        values.append(start_date)
-    elif end_date:
-        conditions.append("(COALESCE(NULLIF(submission_date_raw, ''), NULLIF(report_date_raw, ''), substr(created_at, 1, 10)) <= ?)")
-        values.append(end_date)
-
-    if prefixes is not None:
-        if "ALL" not in prefixes and "所有" not in prefixes:
-            prefix_conds = []
-            for pfx in prefixes:
-                pfx_clean = str(pfx).strip().upper()
-                if pfx_clean in ("", "NONE", "普通"):
-                    prefix_conds.append("(prefix = '' OR prefix IS NULL)")
-                else:
-                    prefix_conds.append("prefix = ?")
-                    values.append(pfx_clean)
-            if prefix_conds:
-                conditions.append("(" + " OR ".join(prefix_conds) + ")")
+    _append_date_filter(conditions, values, SUB_DATE_EXPR, start_date=start_date, end_date=end_date)
+    _append_date_filter(conditions, values, REP_DATE_EXPR, start_date=report_start_date, end_date=report_end_date)
+    _append_prefix_filter(conditions, values, prefixes=prefixes)
 
     sql = "SELECT * FROM patients"
     if conditions:

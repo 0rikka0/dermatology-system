@@ -122,10 +122,10 @@ def run_tests():
         }
         insert_patient(db_path, p1)
 
-        # Patient 2: 今日陆港 已归档 完成审核
+        # Patient 2: 今日分院 已归档 完成审核
         p2 = {
             "pathology_no": "L2026110301",
-            "name": "李陆港",
+            "name": "李分院",
             "gender": "女",
             "age": "25",
             "clinical_diagnosis": "脂溢性角化病",
@@ -165,10 +165,10 @@ def run_tests():
         assert "B2026110201" not in nos_today
         print("  -> 默认时间段 (今日) 筛选验证通过！")
 
-        # 3.2 前缀筛选 (仅陆港)
+        # 3.2 前缀筛选 (仅分院)
         res_l = search_patients(db_path, {"prefix": "L"})
         assert len(res_l) == 1 and res_l[0]["pathology_no"] == "L2026110301"
-        print("  -> 病理号前缀 (仅陆港L) 筛选验证通过！")
+        print("  -> 病理号前缀 (仅分院L) 筛选验证通过！")
 
         # 3.3 归档状态筛选 (已归档)
         res_arch = search_patients(db_path, {"archived": "1"})
@@ -204,15 +204,15 @@ def run_tests():
         report_docx = get_final_report_path(temp_dir, "B2026110201", "王病房", "黑色素瘤待排")
         generate_report_file(TEMPLATES_DIR, report_docx, p_special)
 
-        # 4.1 点击保存时：直接放入 特殊患者归档/待审核 和 免疫组化 两个目录
+        # 4.1 点击保存时：仅放入 特殊患者归档/待审核 目录（免疫组化目录由免疫组化模块创建，不在保存时自动生成）
         save_draft_res = save_special_draft_queue(temp_dir, p_special, report_docx)
         assert save_draft_res["success"] is True
 
         pending_dir = os.path.join(temp_dir, "特殊患者归档", "待审核", "B2026110201_王病房_黑色素瘤待排")
         ihc_dir = os.path.join(temp_dir, "特殊患者归档", "免疫组化", "B2026110201_王病房_黑色素瘤待排")
         assert os.path.exists(pending_dir), "特殊患者归档/待审核 中未生成对应文件夹"
-        assert os.path.exists(ihc_dir), "特殊患者归档/免疫组化 中未生成对应文件夹"
-        print("  -> 保存时自动放入 特殊患者归档/待审核 与 免疫组化 两个目录验证通过！")
+        assert not os.path.exists(ihc_dir), "保存草稿不应自动生成 特殊患者归档/免疫组化 目录"
+        print("  -> 保存时仅放入 特殊患者归档/待审核，不自动生成免疫组化目录验证通过！")
 
         # 4.2 在报告制作工作区直接归档：必须被禁止！
         arch_res_maker = archive_patient_report(temp_dir, p_special, report_docx, is_from_review=False)

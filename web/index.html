@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>皮肤病理报告系统</title>
-  <link rel="stylesheet" href="css/style.css?v=2.4">
+  <link rel="stylesheet" href="css/style.css?v=2.6">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔬</text></svg>">
 </head>
 <body>
@@ -28,6 +28,9 @@
         </button>
         <button class="nav-tab-btn" data-tab="tab-review">
           <span>⚖️</span> 报告审核
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-ihc">
+          <span>🧪</span> 免疫组化
         </button>
         <button class="nav-tab-btn" data-tab="tab-output">
           <span>🖨️</span> 报告输出
@@ -88,7 +91,7 @@
                       <select id="pathology-prefix" class="form-control">
                         <option value="">普通/门诊 (无)</option>
                         <option value="B">B - 病房</option>
-                        <option value="L">L - 陆港院区</option>
+                        <option value="L">L - 分院区</option>
                         <option value="H">H - 会诊</option>
                         <option value="T">T - 特殊</option>
                       </select>
@@ -232,11 +235,11 @@
           </div>
         </div>
 
-        <!-- Right: Today's Patient List & Quick Preview/Actions -->
+        <!-- Right: Patient List & Quick Preview/Actions -->
         <div class="card">
           <div class="card-header">
             <div class="card-title">
-              <span>📅 今日已录入患者</span>
+              <span>📅 患者列表</span>
               <span class="status-pill" id="today-count-badge">0 人</span>
             </div>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-today">
@@ -244,10 +247,29 @@
             </button>
           </div>
 
-          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column;">
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+            <!-- Filter by report/submission date and keyword (same pattern as Report Making) -->
+            <div class="making-filter-box">
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">报告日期</label>
+                <input type="date" id="entry-filter-report-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-entry-report-today" style="white-space: nowrap; padding: 4px 8px;">今日</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-entry-report-all" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">送检日期</label>
+                <input type="date" id="entry-filter-sub-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-entry-sub-all" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <input type="text" id="entry-filter-keyword" class="form-control" placeholder="按姓名/病理号搜索..." style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-primary btn-sm" id="btn-entry-search" style="padding: 4px 10px;">🔍</button>
+              </div>
+            </div>
+
             <!-- Scrollable list of patients -->
-            <div class="patient-list-container" id="today-patient-list">
-              <div class="patient-list-empty">正在加载今日数据...</div>
+            <div class="patient-list-container" id="today-patient-list" style="max-height: 360px;">
+              <div class="patient-list-empty">正在加载患者数据...</div>
             </div>
 
             <!-- Detail & Action Bar for Selected Patient -->
@@ -316,10 +338,15 @@
             <!-- Filter by date and keyword -->
             <div class="making-filter-box">
               <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
-                <label style="font-size: 12px; color: var(--text-muted); width: 60px;">报告日期</label>
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">报告日期</label>
                 <input type="date" id="making-filter-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-making-today" style="white-space: nowrap; padding: 4px 8px;">今日</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-making-all-dates" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">送检日期</label>
+                <input type="date" id="making-filter-sub-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-making-sub-all" style="white-space: nowrap; padding: 4px 8px;">全部</button>
               </div>
               <div style="display: flex; gap: 6px;">
                 <input type="text" id="making-filter-keyword" class="form-control" placeholder="按姓名/病理号搜索..." style="font-size: 13px; padding: 4px 8px;">
@@ -505,7 +532,7 @@
         <div class="card making-sidebar">
           <div class="card-header">
             <div class="card-title">
-              <span>⚖️ 待审核与免疫组化列表</span>
+              <span>⚖️ 待审核与重切列表</span>
               <span class="status-pill" id="review-count-badge">0 人</span>
             </div>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-review">
@@ -519,7 +546,21 @@
                 <input type="checkbox" id="review-show-approved-toggle">
                 <span class="checkbox-text" style="font-size: 13px;">显示【完成审核】患者</span>
               </label>
-              <input type="text" id="review-filter-keyword" class="form-control" placeholder="按姓名/病理号筛选..." style="font-size: 13px; padding: 4px 8px;">
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">报告日期</label>
+                <input type="date" id="review-filter-report-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-review-report-today" style="white-space: nowrap; padding: 4px 8px;">今日</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-review-report-all" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">送检日期</label>
+                <input type="date" id="review-filter-sub-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-review-sub-all" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <input type="text" id="review-filter-keyword" class="form-control" placeholder="按姓名/病理号搜索..." style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-primary btn-sm" id="btn-review-search" style="padding: 4px 10px;">🔍</button>
+              </div>
             </div>
 
             <!-- Scrollable review patient list -->
@@ -534,14 +575,14 @@
           <!-- Empty Hint -->
           <div id="review-empty-hint" class="making-empty-state">
             <div style="font-size: 48px; margin-bottom: 12px;">⚖️</div>
-            <div style="font-size: 16px; font-weight: 600; color: #475569;">请从左侧列表选择待审核或免疫组化患者</div>
-            <p style="color: var(--text-muted); font-size: 13px; margin-top: 6px;">
-              审核页面可修改报告医生与审核医生姓名，保存后自动同步覆盖“病理报告输出”、“已归档报告”与“特殊患者归档”。
+            <div style="font-size: 16px; font-weight: 600; color: #475569;">请从左侧列表选择待审核或重切患者</div>
+            <p style="color: var(--text-muted); font-size: 13px; margin-top: 6px; max-width: 600px;">
+              审核页面可修改医生签名、报告日期、插图排版、镜下所见与病理诊断，保存后同步更新“未归档报告\病理报告输出”与“特殊患者归档（待审核/重切）”两份草稿；审核修改后需前往【报告制作】模块（重新）归档。
             </p>
           </div>
 
           <!-- Active Panel -->
-          <div id="review-editor-panel" style="display: none; height: 100%; display: flex; flex-direction: column;">
+          <div id="review-editor-panel" style="display: none; height: 100%; flex-direction: column;">
             
             <!-- Banner -->
             <div class="making-banner">
@@ -551,18 +592,29 @@
                 <span class="banner-sub" id="rev-badge-status">状态</span>
                 <span class="banner-diag" id="rev-badge-diag">诊断</span>
               </div>
-              <div class="making-banner-actions">
+              <div class="making-banner-actions" style="flex-wrap: wrap;">
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-find-clinical">
                   📷 临床照片查询
                 </button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-open-photo-dir">
                   📂 病理照片目录
                 </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-copy-photo-path">
+                  📋 复制病理照片路径
+                </button>
               </div>
             </div>
 
             <!-- Scrollable Body -->
             <div class="making-scroll-body">
+
+              <!-- Copied Review Photo Directory Bar -->
+              <div id="rev-photo-path-box" class="ihc-photo-path-bar" style="display: none;">
+                <span style="font-size: 12px; font-weight: 600; color: #475569; white-space: nowrap;">📁 审核病理照片目录:</span>
+                <div class="path-text" id="rev-photo-path-text" title="">-</div>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-open-photo-dir-2" style="white-space: nowrap;">📂 打开目录</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-copy-photo-path-2" style="white-space: nowrap;">📋 复制路径</button>
+              </div>
               
               <!-- Reviewer Doctor Override Row (Special in Review) -->
               <div class="editor-section doc-override-section">
@@ -642,7 +694,7 @@
                   📄 在Word中打开
                 </button>
                 <button type="button" class="btn btn-primary" id="btn-rev-save-overwrite">
-                  💾 保存修改并同步覆盖各归档 (2.9)
+                  💾 保存修改并同步草稿
                 </button>
                 <button type="button" class="btn btn-success" id="btn-rev-approve">
                   ✅ 完成审核 (2.9)
@@ -650,6 +702,223 @@
               </div>
             </div>
 
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 3.5. IHC WORKSPACE (免疫组化工作区) -->
+    <div id="tab-ihc" class="workspace-panel">
+      <div class="making-grid">
+
+        <!-- Left: IHC Patients List -->
+        <div class="card making-sidebar">
+          <div class="card-header">
+            <div class="card-title">
+              <span>🧪 免疫组化列表</span>
+              <span class="status-pill" id="ihc-count-badge">0 人</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-ihc">
+              🔄 刷新
+            </button>
+          </div>
+
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+            <div class="making-filter-box">
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">报告日期</label>
+                <input type="date" id="ihc-filter-report-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-report-today" style="white-space: nowrap; padding: 4px 8px;">今日</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-report-all" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                <label style="font-size: 12px; color: var(--text-muted); width: 54px; flex-shrink: 0;">送检日期</label>
+                <input type="date" id="ihc-filter-sub-date" class="form-control" style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-sub-all" style="white-space: nowrap; padding: 4px 8px;">全部</button>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <input type="text" id="ihc-filter-keyword" class="form-control" placeholder="按姓名/病理号搜索..." style="font-size: 13px; padding: 4px 8px;">
+                <button type="button" class="btn btn-primary btn-sm" id="btn-ihc-search" style="padding: 4px 10px;">🔍</button>
+              </div>
+            </div>
+
+            <!-- Scrollable IHC patient list -->
+            <div class="patient-list-container" id="ihc-patient-list" style="flex: 1; max-height: calc(100vh - 280px);">
+              <div class="patient-list-empty">正在加载免疫组化患者数据...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: IHC Editor -->
+        <div class="card making-editor-card" id="ihc-editor-container">
+          <!-- Empty Hint -->
+          <div id="ihc-empty-hint" class="making-empty-state">
+            <div style="font-size: 48px; margin-bottom: 12px;">🧪</div>
+            <div style="font-size: 16px; font-weight: 600; color: #475569;">请从左侧列表选择需要免疫组化的患者</div>
+            <p style="color: var(--text-muted); font-size: 13px; margin-top: 6px; max-width: 560px; text-align: center;">
+              免疫组化报告独立于原报告：创建后将在“特殊患者归档\免疫组化”生成独立草稿与病理照片目录（不复制临床照片），保存与归档均不影响原报告。
+            </p>
+          </div>
+
+          <!-- Active Panel -->
+          <div id="ihc-editor-panel" style="display: none; height: 100%; flex-direction: column;">
+            <!-- Banner -->
+            <div class="making-banner">
+              <div class="making-banner-info">
+                <span class="patient-title-badge" id="ihc-badge-name">姓名</span>
+                <span class="banner-tag" id="ihc-badge-no">病理号</span>
+                <span class="banner-sub" id="ihc-badge-status">状态</span>
+                <span class="banner-diag" id="ihc-badge-diag">诊断</span>
+              </div>
+              <div class="making-banner-actions" style="flex-wrap: wrap;">
+                <button type="button" class="btn btn-primary btn-sm" id="btn-ihc-create">
+                  🧪 创建免疫组化报告
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-open-photo-dir">
+                  📂 打开组化照片目录
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-copy-photo-path">
+                  📋 复制组化照片路径
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-find-clinical">
+                  📷 临床照片查询
+                </button>
+              </div>
+            </div>
+
+            <!-- Scrollable Body -->
+            <div class="making-scroll-body">
+              <!-- Not-created prompt banner -->
+              <div id="ihc-not-created-banner" class="ihc-not-created-banner" style="display: none;">
+                <div>
+                  <strong id="ihc-not-created-title">尚未创建该患者的免疫组化报告副本</strong>
+                  <div id="ihc-not-created-desc" style="font-size: 12px; margin-top: 2px;">
+                    请先点击【创建免疫组化报告】，系统将复制该患者【已归档报告】及病理照片目录至“特殊患者归档\免疫组化”中（不复制临床照片）。
+                  </div>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-ihc-create-inline" style="white-space: nowrap;">
+                  🧪 立即创建免疫组化报告
+                </button>
+              </div>
+
+              <!-- Copied Photo Directory Bar -->
+              <div id="ihc-photo-path-box" class="ihc-photo-path-bar" style="display: none;">
+                <span style="font-size: 12px; font-weight: 600; color: #475569; white-space: nowrap;">📁 免疫组化照片目录:</span>
+                <div class="path-text" id="ihc-photo-path-text" title="">-</div>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-open-photo-dir-2" style="white-space: nowrap;">📂 打开目录</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-copy-photo-path-2" style="white-space: nowrap;">📋 复制路径</button>
+              </div>
+
+              <!-- Doctor & Report Date Override -->
+              <div class="editor-section doc-override-section">
+                <div class="section-title">
+                  <span>👨‍⚕️ 医师签名与报告日期 (仅作用于免疫组化报告)</span>
+                </div>
+                <div class="form-row" style="margin-top: 8px;">
+                  <div class="form-group">
+                    <label class="form-label required">报告医生</label>
+                    <input type="text" id="ihc-report-doc" class="form-control" placeholder="报告医生姓名">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label required">审核医生</label>
+                    <input type="text" id="ihc-review-doc" class="form-control" placeholder="审核医生姓名">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">报告日期</label>
+                    <input type="date" id="ihc-report-date" class="form-control">
+                  </div>
+                </div>
+              </div>
+
+              <!-- Copied IHC Pathology Photos & Slots -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🖼️ 免疫组化报告插图排版</span>
+                    <span class="sub-hint">(读取自复制后的“特殊患者归档\免疫组化\...\病理照片”目录)</span>
+                  </div>
+                  <div style="display: flex; gap: 8px;">
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-refresh-photos">🔄 重新读取照片</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-add-slot">➕ 增加图片预留位</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-auto-layout">📐 一键自动排版</button>
+                  </div>
+                </div>
+
+                <div class="available-photos-strip">
+                  <div class="strip-label">已读入免疫组化照片库 (<span id="ihc-avail-photos-count">0</span> 张)：</div>
+                  <div class="photos-horizontal-scroll" id="ihc-available-photos-list">
+                    <div class="photo-strip-empty">暂无照片（可打开组化照片目录放入免疫组化照片后点击“重新读取照片”）</div>
+                  </div>
+                </div>
+
+                <div class="slots-container">
+                  <div class="slots-header">
+                    <span style="font-weight: 600;">免疫组化报告图片插槽：</span>
+                    <span style="font-size: 12px; color: var(--text-muted);" id="ihc-slots-status-desc">当前共 1 个插槽</span>
+                  </div>
+                  <div class="slots-grid" id="ihc-slots-grid"></div>
+                </div>
+              </div>
+
+              <!-- 镜下描述 -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🔬 镜下描述与免疫组化结果</span>
+                  </div>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-ihc-open-template-modal">
+                    📖 浏览文字模板库 (含免疫组化模板)
+                  </button>
+                </div>
+                <div class="recommend-box" id="ihc-recommend-container" style="display: none;">
+                  <span class="recommend-label">💡 智能推荐模板 (根据组化图片诊断)：</span>
+                  <div class="recommend-chips" id="ihc-recommend-chips"></div>
+                </div>
+                <div class="form-group" style="margin-top: 8px;">
+                  <textarea id="ihc-microscopic-desc" class="form-control" rows="5" placeholder="在此编辑镜下描述与免疫组化染色结果..."></textarea>
+                </div>
+              </div>
+
+              <!-- 病理诊断 -->
+              <div class="editor-section">
+                <div class="editor-section-header">
+                  <div class="section-title">
+                    <span>🏷️ 病理诊断</span>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-regen-diag">
+                    ⚡ 重新按图片命名合成
+                  </button>
+                </div>
+                <div class="form-group">
+                  <input type="text" id="ihc-pathology-diag" class="form-control" style="font-size: 15px; font-weight: 600;" placeholder="输入免疫组化后病理诊断">
+                </div>
+              </div>
+            </div>
+
+            <!-- Footer Action Bar -->
+            <div class="making-footer-bar">
+              <div class="footer-left">
+                <span id="ihc-save-status" class="save-status-text">未创建</span>
+              </div>
+              <div class="footer-right">
+                <button type="button" class="btn btn-secondary" id="btn-ihc-preview">
+                  👁️ 预览报告
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-ihc-open-word">
+                  📄 在Word中打开
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-ihc-open-explorer">
+                  📂 打开组化目录
+                </button>
+                <button type="button" class="btn btn-primary" id="btn-ihc-save">
+                  💾 保存免疫组化报告
+                </button>
+                <button type="button" class="btn btn-success" id="btn-ihc-archive">
+                  📦 归档免疫组化报告
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -676,19 +945,39 @@
 
           <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
             <div class="output-toolbar">
-              <div class="output-filter-row">
-                <label style="font-size: 12px; color: var(--text-muted); white-space: nowrap;">病理号范围:</label>
-                <select id="output-reg-prefix-select" class="form-control" style="font-size: 13px; padding: 4px 8px;">
-                  <option value="ALL">所有范围</option>
-                  <option value="NONE">仅普通 (无前缀)</option>
-                  <option value="L">仅陆港 (L)</option>
-                  <option value="B">仅病房 (B)</option>
-                  <option value="T">仅特殊 (T)</option>
-                </select>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">报告日期:</label>
+                <input type="date" id="output-reg-report-start" class="form-control output-date-input">
+                <span style="color: var(--text-muted); font-size: 12px;">至</span>
+                <input type="date" id="output-reg-report-end" class="form-control output-date-input">
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-reg-rep-today">今日</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-reg-rep-week">本周</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-reg-rep-month">本月</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-reg-rep-all">全部</button>
               </div>
-              <button type="button" class="btn btn-primary btn-sm" id="btn-output-reg-print-today" style="width: 100%; white-space: nowrap;">
-                🖨️ 一键打印今日已归档报告 (第1页)
-              </button>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">送检日期:</label>
+                <input type="date" id="output-reg-sub-start" class="form-control output-date-input">
+                <span style="color: var(--text-muted); font-size: 12px;">至</span>
+                <input type="date" id="output-reg-sub-end" class="form-control output-date-input">
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-reg-sub-all">全部</button>
+              </div>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">前缀范围:</label>
+                <div class="output-prefixes-group">
+                  <label class="custom-checkbox-label"><input type="checkbox" id="output-reg-pfx-all" checked><span class="checkbox-text" style="font-size: 12px; font-weight: 600;">所有范围</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-reg-pfx-chk" value="NONE" checked><span class="checkbox-text" style="font-size: 12px;">普通</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-reg-pfx-chk" value="L" checked><span class="checkbox-text" style="font-size: 12px;">分院(L)</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-reg-pfx-chk" value="B" checked><span class="checkbox-text" style="font-size: 12px;">病房(B)</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-reg-pfx-chk" value="T" checked><span class="checkbox-text" style="font-size: 12px;">特殊(T)</span></label>
+                </div>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-output-reg-query" style="white-space: nowrap;">🔍 筛选</button>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-output-reg-print-today" style="flex: 1; white-space: nowrap;">
+                  🖨️ 一键打印今日已归档报告 (第1页)
+                </button>
+              </div>
             </div>
 
             <!-- List Container -->
@@ -698,11 +987,11 @@
           </div>
         </div>
 
-        <!-- List 2: 特殊审核完成报告 (待审核/免疫组化 且 完成审核) -->
+        <!-- List 2: 特殊审核完成报告 (待审/重切+完成审核) -->
         <div class="card output-list-card">
           <div class="card-header">
             <div class="card-title">
-              <span>⚖️ 特殊审核完成报告 (待审/组化+完成审核)</span>
+              <span>⚖️ 特殊审核完成报告 (待审/重切+完成审核)</span>
               <span class="status-pill" id="output-spec-count-badge">0 人</span>
             </div>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-output-spec">🔄 刷新</button>
@@ -710,24 +999,98 @@
 
           <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
             <div class="output-toolbar">
-              <div class="output-filter-row">
-                <label style="font-size: 12px; color: var(--text-muted); white-space: nowrap;">病理号范围:</label>
-                <select id="output-spec-prefix-select" class="form-control" style="font-size: 13px; padding: 4px 8px;">
-                  <option value="ALL">所有范围</option>
-                  <option value="NONE">仅普通 (无前缀)</option>
-                  <option value="L">仅陆港 (L)</option>
-                  <option value="B">仅病房 (B)</option>
-                  <option value="T">仅特殊 (T)</option>
-                </select>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">报告日期:</label>
+                <input type="date" id="output-spec-report-start" class="form-control output-date-input">
+                <span style="color: var(--text-muted); font-size: 12px;">至</span>
+                <input type="date" id="output-spec-report-end" class="form-control output-date-input">
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-spec-rep-today">今日</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-spec-rep-week">本周</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-spec-rep-month">本月</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-spec-rep-all">全部</button>
               </div>
-              <button type="button" class="btn btn-primary btn-sm" id="btn-output-spec-print-today" style="width: 100%; white-space: nowrap; background: #0284c7; border-color: #0284c7;">
-                🖨️ 一键打印今日已归档报告 (第1页)
-              </button>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">送检日期:</label>
+                <input type="date" id="output-spec-sub-start" class="form-control output-date-input">
+                <span style="color: var(--text-muted); font-size: 12px;">至</span>
+                <input type="date" id="output-spec-sub-end" class="form-control output-date-input">
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-spec-sub-all">全部</button>
+              </div>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">前缀范围:</label>
+                <div class="output-prefixes-group">
+                  <label class="custom-checkbox-label"><input type="checkbox" id="output-spec-pfx-all" checked><span class="checkbox-text" style="font-size: 12px; font-weight: 600;">所有范围</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-spec-pfx-chk" value="NONE" checked><span class="checkbox-text" style="font-size: 12px;">普通</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-spec-pfx-chk" value="L" checked><span class="checkbox-text" style="font-size: 12px;">分院(L)</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-spec-pfx-chk" value="B" checked><span class="checkbox-text" style="font-size: 12px;">病房(B)</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-spec-pfx-chk" value="T" checked><span class="checkbox-text" style="font-size: 12px;">特殊(T)</span></label>
+                </div>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-output-spec-query" style="white-space: nowrap;">🔍 筛选</button>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-output-spec-print-today" style="flex: 1; white-space: nowrap; background: #0284c7; border-color: #0284c7;">
+                  🖨️ 一键打印今日已归档报告 (第1页)
+                </button>
+              </div>
             </div>
 
             <!-- List Container -->
             <div class="output-patients-scroll" id="output-spec-patient-list">
               <div class="patient-list-empty">正在加载特殊审核完成报告...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- List 3: 免疫组化已归档报告 (*_免疫组化报告.docx) -->
+        <div class="card output-list-card">
+          <div class="card-header">
+            <div class="card-title">
+              <span>🧪 免疫组化已归档报告</span>
+              <span class="status-pill" id="output-ihc-count-badge">0 人</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-output-ihc">🔄 刷新</button>
+          </div>
+
+          <div class="card-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+            <div class="output-toolbar">
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">报告日期:</label>
+                <input type="date" id="output-ihc-report-start" class="form-control output-date-input">
+                <span style="color: var(--text-muted); font-size: 12px;">至</span>
+                <input type="date" id="output-ihc-report-end" class="form-control output-date-input">
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-ihc-rep-today">今日</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-ihc-rep-week">本周</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-ihc-rep-month">本月</button>
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-ihc-rep-all">全部</button>
+              </div>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">送检日期:</label>
+                <input type="date" id="output-ihc-sub-start" class="form-control output-date-input">
+                <span style="color: var(--text-muted); font-size: 12px;">至</span>
+                <input type="date" id="output-ihc-sub-end" class="form-control output-date-input">
+                <button type="button" class="btn btn-secondary btn-sm output-quick-btn" id="btn-output-ihc-sub-all">全部</button>
+              </div>
+              <div class="output-filter-row" style="flex-wrap: wrap;">
+                <label class="output-filter-label">前缀范围:</label>
+                <div class="output-prefixes-group">
+                  <label class="custom-checkbox-label"><input type="checkbox" id="output-ihc-pfx-all" checked><span class="checkbox-text" style="font-size: 12px; font-weight: 600;">所有范围</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-ihc-pfx-chk" value="NONE" checked><span class="checkbox-text" style="font-size: 12px;">普通</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-ihc-pfx-chk" value="L" checked><span class="checkbox-text" style="font-size: 12px;">分院(L)</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-ihc-pfx-chk" value="B" checked><span class="checkbox-text" style="font-size: 12px;">病房(B)</span></label>
+                  <label class="custom-checkbox-label"><input type="checkbox" class="output-ihc-pfx-chk" value="T" checked><span class="checkbox-text" style="font-size: 12px;">特殊(T)</span></label>
+                </div>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-output-ihc-query" style="white-space: nowrap;">🔍 筛选</button>
+                <button type="button" class="btn btn-primary btn-sm" id="btn-output-ihc-print-today" style="flex: 1; white-space: nowrap; background: #7c3aed; border-color: #7c3aed;">
+                  🖨️ 一键打印今日已归档报告 (第1页)
+                </button>
+              </div>
+            </div>
+
+            <!-- List Container -->
+            <div class="output-patients-scroll" id="output-ihc-patient-list">
+              <div class="patient-list-empty">正在加载免疫组化已归档报告...</div>
             </div>
           </div>
         </div>
@@ -743,9 +1106,27 @@
         </div>
         <div class="card-body" style="padding: 16px 20px;">
           <div class="signing-form-grid">
-            
-            <!-- Date range row -->
+
+            <!-- Report Date range row (with 今日/本周/本月/全部) -->
             <div class="signing-row">
+              <div class="signing-label">📅 报告日期范围：</div>
+              <div class="signing-inputs-group">
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="date" id="signing-report-start-date" class="form-control" style="width: 160px;">
+                  <span style="color: var(--text-muted);">至</span>
+                  <input type="date" id="signing-report-end-date" class="form-control" style="width: 160px;">
+                </div>
+                <div class="signing-quick-dates">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-today">今日</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-week">本周</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-month">本月</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-all">全部</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Submission Date range row (only 全部 button) -->
+            <div class="signing-row" style="margin-top: 12px;">
               <div class="signing-label">📅 送检日期范围：</div>
               <div class="signing-inputs-group">
                 <div style="display: flex; gap: 8px; align-items: center;">
@@ -754,10 +1135,7 @@
                   <input type="date" id="signing-end-date" class="form-control" style="width: 160px;">
                 </div>
                 <div class="signing-quick-dates">
-                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-today">今日</button>
-                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-week">本周</button>
-                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-month">本月</button>
-                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-date-all">全部时间</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-signing-sub-all">全部</button>
                 </div>
               </div>
             </div>
@@ -776,7 +1154,7 @@
                 </label>
                 <label class="custom-checkbox-label">
                   <input type="checkbox" class="pfx-item-chk" value="L" checked>
-                  <span class="checkbox-text">仅陆港 (L)</span>
+                  <span class="checkbox-text">仅分院 (L)</span>
                 </label>
                 <label class="custom-checkbox-label">
                   <input type="checkbox" class="pfx-item-chk" value="B" checked>
@@ -902,7 +1280,7 @@
                 <select id="search-prefix" class="form-control">
                   <option value="ALL">所有前缀 (全部)</option>
                   <option value="NONE">普通 (无前缀)</option>
-                  <option value="L">陆港 (L)</option>
+                  <option value="L">分院 (L)</option>
                   <option value="B">病房 (B)</option>
                   <option value="T">特殊 (T)</option>
                 </select>
@@ -1018,7 +1396,7 @@
               <div class="section-label">📁 工作目录 (核心数据存储路径)</div>
               <div class="form-group">
                 <label class="form-label" for="setting-work-dir">工作目录路径</label>
-                <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\dermatology-system\工作目录">
+                <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\DermatologySystem\工作目录">
                 <small style="color: var(--text-muted); margin-top: 4px;">
                   系统将按照“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”、“领取表”标准结构自动维护文件。
                 </small>
@@ -1059,7 +1437,7 @@
       <form id="wizard-form">
         <div class="form-group" style="margin-bottom: 14px;">
           <label class="form-label required" for="wizard-work-dir">工作目录位置</label>
-          <input type="text" id="wizard-work-dir" class="form-control" value="D:\dermatology-system\工作目录" required>
+          <input type="text" id="wizard-work-dir" class="form-control" value="D:\DermatologySystem\工作目录" required>
           <small style="color: var(--text-muted); margin-top: 4px;">
             系统将自动在此目录下建立“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”等标准文件夹。
           </small>
@@ -1276,6 +1654,6 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- Main JavaScript Logic -->
-  <script src="js/app.js?v=2.4"></script>
+  <script src="js/app.js?v=2.6"></script>
 </body>
 </html>
