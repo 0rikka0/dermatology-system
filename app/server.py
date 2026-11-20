@@ -11,12 +11,14 @@ import json
 import threading
 import urllib.parse
 import mimetypes
+import socket
 import subprocess
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 from app.config import load_config, save_config, update_config
+from app.instance_lock import APP_ID, remove_runtime_info
 from app.path_manager import (
     ensure_workspace_structure,
     get_database_path,
@@ -44,6 +46,7 @@ from app.path_manager import (
     create_ihc_report_package,
     archive_ihc_report,
     revoke_ihc_archive_files,
+    delete_ihc_report_files,
     revoke_patient_archive_files,
     revoke_patient_approval_files,
     get_signing_sheet_dir
@@ -69,13 +72,15 @@ from app.database import (
     upsert_ihc_report,
     mark_ihc_archived,
     revoke_ihc_archive_db,
+    delete_ihc_report_and_clear_status,
     update_ihc_paths,
     get_output_regular_patients,
     get_output_special_approved_patients,
     get_output_ihc_patients,
     revoke_patient_archive_db,
     revoke_patient_approval_db,
-    get_patients_for_signing_sheet
+    get_patients_for_signing_sheet,
+    get_today_batch_archivable_patients
 )
 from app.template_manager import (
     load_text_templates,
@@ -327,7 +332,15 @@ WEB_DIR = os.path.join(BASE_DIR, "web")
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            except OSError:
+                pass
+        super().server_bind()
 
 class PathologyRequestHandler(SimpleHTTPRequestHandler):
     """Handles HTTP requests for Static files and REST API."""
@@ -336,8 +349,12 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=WEB_DIR, **kwargs)
 
     def log_message(self, format, *args):
-        # Concise logging
-        sys.stdout.write(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]} - {args[1]}\n")
+        # Concise logging with silent pythonw.exe (sys.stdout is None) protection
+        try:
+            if sys.stdout is not None:
+                sys.stdout.write(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]} - {args[1]}\n")
+        except Exception:
+            pass
 
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -504,6 +521,8 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             today_str = datetime.now().strftime("%Y-%m-%d")
             self.send_json({
                 "success": True,
+                "app_id": APP_ID,
+                "pid": os.getpid(),
                 "initialized": cfg.get("initialized", False),
                 "work_dir": cfg.get("work_dir", ""),
                 "report_doctor": cfg.get("report_doctor", "张医生"),
@@ -764,6 +783,8 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             query_params = {
                 "start_date": query.get("start_date", [""])[0],
                 "end_date": query.get("end_date", [""])[0],
+                "report_start_date": query.get("report_start_date", [""])[0],
+                "report_end_date": query.get("report_end_date", [""])[0],
                 "prefix": query.get("prefix", ["ALL"])[0],
                 "archived": query.get("archived", ["ALL"])[0],
                 "review_status": query.get("review_status", ["ALL"])[0],
@@ -1144,6 +1165,37 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        def _archive_single_patient(patient, source="maker", allow_word_fallback=True):
+            p_no = patient["pathology_no"]
+            rev_st = str(patient.get("review_status", ""))
+            is_approved = (rev_st == "完成审核")
+            is_pending = int(patient.get("is_pending_review", 0)) == 1 or "待审核" in rev_st
+            is_recut = int(patient.get("is_needs_recut", 0)) == 1 or "重切" in rev_st
+            if source == "maker" and not is_approved and (is_pending or is_recut):
+                return (
+                    400,
+                    "标记为“待审核”或“重切”的报告禁止在报告制作工作区直接归档！已在保存时自动放入特殊患者待审队列，请移步【报告审核】工作区完成专家审核后再进行归档。",
+                    None,
+                )
+
+            report_file = patient.get("final_report_path")
+            if allow_word_fallback and (not report_file or not os.path.exists(report_file)):
+                report_file = patient.get("word_path")
+
+            if not report_file or not os.path.exists(report_file):
+                return 400, "未找到该患者生成的Word报告，请先制作并保存报告", None
+
+            try:
+                arch_res = archive_patient_report(work_dir, patient, report_file, is_from_review=(source == "review" or is_approved))
+            except PermissionError as pe:
+                return 409, str(pe), None
+            if not arch_res.get("success"):
+                return 400, arch_res.get("error", "归档失败"), None
+
+            mark_patient_archived(db_path, p_no, arch_res["archive_dir"])
+            updated_p = _attach_review_photo_dir(work_dir, get_patient(db_path, p_no))
+            return 200, "", {"arch_res": arch_res, "patient": updated_p}
+
         # 8. Archive Patient Report (2.8 & 3)
         if path == "/api/reports/archive":
             if not cfg.get("initialized"):
@@ -1157,35 +1209,13 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
                 return
 
-            # Check: prohibited from maker if pending review / recut and not yet approved (IHC-only follows regular flow)
-            rev_st = str(patient.get("review_status", ""))
-            is_approved = (rev_st == "完成审核")
-            is_pending = int(patient.get("is_pending_review", 0)) == 1 or "待审核" in rev_st
-            is_recut = int(patient.get("is_needs_recut", 0)) == 1 or "重切" in rev_st
-            if source == "maker" and not is_approved and (is_pending or is_recut):
-                self.send_error_json("标记为“待审核”或“重切”的报告禁止在报告制作工作区直接归档！已在保存时自动放入特殊患者待审队列，请移步【报告审核】工作区完成专家审核后再进行归档。", status=400)
+            st_code, err_msg, res_data = _archive_single_patient(patient, source=source, allow_word_fallback=True)
+            if st_code != 200:
+                self.send_error_json(err_msg, status=st_code)
                 return
 
-            report_file = patient.get("final_report_path")
-            if not report_file or not os.path.exists(report_file):
-                report_file = patient.get("word_path")
-
-            if not report_file or not os.path.exists(report_file):
-                self.send_error_json("未找到该患者生成的Word报告，请先制作并保存报告", status=400)
-                return
-
-            try:
-                arch_res = archive_patient_report(work_dir, patient, report_file, is_from_review=(source == "review" or is_approved))
-            except PermissionError as pe:
-                self.send_error_json(str(pe), status=409)
-                return
-            if not arch_res.get("success"):
-                self.send_error_json(arch_res.get("error", "归档失败"), status=400)
-                return
-
-            mark_patient_archived(db_path, p_no, arch_res["archive_dir"])
-            updated_p = _attach_review_photo_dir(work_dir, get_patient(db_path, p_no))
-
+            arch_res = res_data["arch_res"]
+            updated_p = res_data["patient"]
             self.send_json({
                 "success": True,
                 "message": f"患者 [{patient['name']}] 报告已成功归档入【已归档报告】！",
@@ -1196,31 +1226,99 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        # 9. Save & Sync Review Overwrite (2.9 & 3)
-        if path == "/api/reviews/save":
+        # 8.1 Batch Archive Today's Saved-Unarchived Reports in Report Making
+        if path == "/api/reports/batch_archive_today":
             if not cfg.get("initialized"):
                 self.send_error_json("系统尚未初始化工作目录")
                 return
 
-            p_no = body.get("pathology_no", "").strip().upper()
-            patient = get_patient(db_path, p_no)
-            if not patient:
-                self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
+            today_str = (body.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+            dry_run = bool(body.get("dry_run", False))
+            candidates = [
+                p for p in get_today_batch_archivable_patients(db_path, today_str=today_str)
+                if p.get("final_report_path") and os.path.exists(p.get("final_report_path"))
+            ]
+
+            if dry_run:
+                self.send_json({
+                    "success": True,
+                    "today": today_str,
+                    "count": len(candidates),
+                    "candidates": [
+                        {
+                            "pathology_no": p["pathology_no"],
+                            "name": p["name"],
+                            "review_status": p.get("review_status", ""),
+                            "is_needs_ihc": p.get("is_needs_ihc", 0),
+                            "archived": p.get("archived", 0)
+                        }
+                        for p in candidates
+                    ]
+                })
                 return
 
-            path_diag = body.get("pathology_diag", patient.get("pathology_diag", "")).strip()
-            micro_desc = body.get("microscopic_desc", patient.get("microscopic_desc", "")).strip()
-            selected_images = body.get("selected_images")
+            if not candidates:
+                self.send_json({
+                    "success": True,
+                    "today": today_str,
+                    "archived_count": 0,
+                    "failed_count": 0,
+                    "archived_nos": [],
+                    "failed": [],
+                    "message": "今日暂无可归档的已保存未归档报告（普通及仅免疫组化）"
+                })
+                return
+
+            archived_nos = []
+            failed = []
+            for p in candidates:
+                st_code, err_msg, _ = _archive_single_patient(p, source="maker", allow_word_fallback=False)
+                if st_code == 200:
+                    archived_nos.append(p["pathology_no"])
+                else:
+                    failed.append({
+                        "pathology_no": p["pathology_no"],
+                        "name": p.get("name", ""),
+                        "error": err_msg
+                    })
+
+            if archived_nos and not failed:
+                msg = f"今日已成功批量归档 {len(archived_nos)} 份已保存报告！"
+            elif archived_nos and failed:
+                msg = f"批量归档部分完成：成功 {len(archived_nos)} 份，失败 {len(failed)} 份"
+            else:
+                msg = f"批量归档失败（{len(failed)} 份未能归档）：{failed[0]['error']}"
+
+            self.send_json({
+                "success": len(archived_nos) > 0,
+                "today": today_str,
+                "archived_count": len(archived_nos),
+                "failed_count": len(failed),
+                "archived_nos": archived_nos,
+                "failed": failed,
+                "message": msg
+            }, status=200 if archived_nos else 409)
+            return
+
+        def _save_review_report_internal(req_body):
+            p_no = req_body.get("pathology_no", "").strip().upper()
+            patient = get_patient(db_path, p_no)
+            if not patient:
+                return 404, f"未找到病理号为 [{p_no}] 的患者", None
+
+            path_diag = req_body.get("pathology_diag", patient.get("pathology_diag", "")).strip()
+            micro_desc = req_body.get("microscopic_desc", patient.get("microscopic_desc", "")).strip()
+            selected_images = req_body.get("selected_images")
             if selected_images is None:
                 selected_images = patient.get("selected_images", [])
-            image_count = int(body.get("image_count") or patient.get("image_count", 1))
-            biopsy_sites = body.get("biopsy_sites")
+            image_count = int(req_body.get("image_count") or patient.get("image_count", 1))
+            biopsy_sites = req_body.get("biopsy_sites")
             if biopsy_sites is None:
                 biopsy_sites = patient.get("biopsy_sites", [])
 
-            rep_doc = body.get("report_doctor") or patient.get("report_doctor") or "张医生"
-            rev_doc = body.get("review_doctor") or patient.get("review_doctor") or "李主任"
-            rep_date_cn, rep_date_raw = normalize_report_date(body.get("report_date"))
+            rep_doc = req_body.get("report_doctor") or patient.get("report_doctor") or "张医生"
+            rev_doc = req_body.get("review_doctor") or patient.get("review_doctor") or "李主任"
+            rep_date_cn, rep_date_raw = normalize_report_date(req_body.get("report_date"))
             if not rep_date_cn:
                 rep_date_cn = patient.get("report_date", "")
             if not rep_date_raw:
@@ -1256,13 +1354,12 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 generate_report_file(templates_dir, final_report_path, data_for_doc)
                 cleanup_stale_output_reports(work_dir, p_no, patient["name"], keep_path=final_report_path)
             except PermissionError as pe:
-                self.send_error_json(str(pe), status=409)
-                return
+                return 409, str(pe), None
 
             # Update database (if already archived, mark archived=2 so user re-archives in Report Making)
-            is_pending_val = body.get("is_pending_review", patient.get("is_pending_review", 0))
-            is_ihc_val = body.get("is_needs_ihc", patient.get("is_needs_ihc", 0))
-            is_recut_val = body.get("is_needs_recut", patient.get("is_needs_recut", 0))
+            is_pending_val = req_body.get("is_pending_review", patient.get("is_pending_review", 0))
+            is_ihc_val = req_body.get("is_needs_ihc", patient.get("is_needs_ihc", 0))
+            is_recut_val = req_body.get("is_needs_recut", patient.get("is_needs_recut", 0))
             update_patient_report_making(db_path, p_no, {
                 "pathology_diag": path_diag,
                 "microscopic_desc": micro_desc,
@@ -1285,8 +1382,6 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 })
 
             updated_p = get_patient(db_path, p_no)
-            # Synchronize the two draft copies (未归档报告/病理报告输出 and 特殊患者归档/待审核|重切|完成审核),
-            # WITHOUT modifying 已归档报告/ directly (re-archive is performed in Report Making).
             overwritten_paths = []
             try:
                 if updated_p.get("review_status") == "完成审核" and not updated_p.get("is_pending_review") and not updated_p.get("is_needs_recut"):
@@ -1297,18 +1392,62 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                     for d in save_res.get("saved_dirs", []):
                         overwritten_paths.append(os.path.join(d, f"[病理报告]{os.path.basename(d)}.docx"))
             except PermissionError as pe:
-                self.send_error_json(str(pe), status=409)
-                return
+                return 409, str(pe), None
 
             updated_p = _attach_review_photo_dir(work_dir, updated_p)
+            return 200, "", {
+                "overwritten": overwritten_paths,
+                "final_report_path": final_report_path,
+                "patient": updated_p
+            }
+
+        # 9. Save & Sync Review Overwrite (2.9 & 3)
+        if path == "/api/reviews/save":
+            if not cfg.get("initialized"):
+                self.send_error_json("系统尚未初始化工作目录")
+                return
+
+            st_code, err_msg, res_data = _save_review_report_internal(body)
+            if st_code != 200:
+                self.send_error_json(err_msg, status=st_code)
+                return
+
+            updated_p = res_data["patient"]
             rearchive_hint = "（该患者此前已归档，请前往【报告制作】模块点击“一键归档”以更新正式归档报告）" if updated_p.get("archived") == 2 else ""
             self.send_json({
                 "success": True,
                 "message": f"审核内容已保存并同步草稿目录！{rearchive_hint}",
-                "overwritten": overwritten_paths,
-                "final_report_path": final_report_path,
+                "overwritten": res_data["overwritten"],
+                "final_report_path": res_data["final_report_path"],
                 "patient": updated_p,
                 "duplicate_clinical_photos": False
+            })
+            return
+
+        # 9.1 Save Review Edits and Print Page 1 Only
+        if path == "/api/reviews/print":
+            if not cfg.get("initialized"):
+                self.send_error_json("系统尚未初始化工作目录")
+                return
+
+            st_code, err_msg, res_data = _save_review_report_internal(body)
+            if st_code != 200:
+                self.send_error_json(err_msg, status=st_code)
+                return
+
+            final_report_path = res_data["final_report_path"]
+            updated_p = res_data["patient"]
+            printed, failed, print_err = print_word_documents([final_report_path], page1_only=True)
+            print_ok = (len(printed) == 1 and not failed)
+
+            self.send_json({
+                "success": True,
+                "message": "审核报告已保存，已调用Word发送第1页至默认打印机！" if print_ok else f"审核报告已保存，但调用Word打印失败: {print_err or '请检查Word及默认打印机'}",
+                "direct_printed": print_ok,
+                "print_error": print_err,
+                "overwritten": res_data["overwritten"],
+                "final_report_path": final_report_path,
+                "patient": updated_p
             })
             return
 
@@ -1508,6 +1647,34 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "archive_file": arch_res["archive_file"],
                 "filename": arch_res["filename"],
                 "ihc_report": ihc_archived,
+                "patient": updated_p
+            })
+            return
+
+        # 10.4 Delete Independent IHC Report (Recycle Bin) and Revoke Patient IHC Status
+        if path == "/api/ihc/delete":
+            if not cfg.get("initialized"):
+                self.send_error_json("系统尚未初始化工作目录")
+                return
+
+            p_no = body.get("pathology_no", "").strip().upper()
+            patient = get_patient(db_path, p_no)
+            if not patient:
+                self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
+                return
+
+            ihc = get_ihc_report(db_path, p_no)
+            try:
+                del_res = delete_ihc_report_files(work_dir, patient, ihc_data=ihc)
+            except PermissionError as pe:
+                self.send_error_json(str(pe), status=409)
+                return
+
+            updated_p = delete_ihc_report_and_clear_status(db_path, p_no)
+            self.send_json({
+                "success": True,
+                "message": f"已将患者 [{patient['name']}] 的免疫组化报告及目录移入回收站，并撤销其免疫组化状态！",
+                "removed": del_res.get("removed", []),
                 "patient": updated_p
             })
             return
@@ -1892,6 +2059,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             def _delayed_exit():
                 import time
                 time.sleep(0.5)
+                remove_runtime_info(expected_pid=os.getpid())
                 os._exit(0)
             threading.Thread(target=_delayed_exit, daemon=True).start()
             return
@@ -2007,7 +2175,8 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             else:
                 sync_updated_report_to_special_archives(work_dir, draft_doc_data, rename_res["word_path"])
 
-            # Determine whether to mark 需要重新归档 and prompt user to re-archive (IHC-only follows regular flow)
+            # Determine whether to mark 需要重新归档 and prompt user to re-archive
+            # ONLY prompt when the patient's report had already been archived (was_archived).
             rev_st = str(existing.get("review_status", ""))
             is_approved = (rev_st == "完成审核")
             is_still_pending = (not is_approved) and (
@@ -2015,10 +2184,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 or int(existing.get("is_pending_review", 0)) == 1
                 or int(existing.get("is_needs_recut", 0)) == 1
             )
-            ask_rearchive = bool(has_saved_report and not is_still_pending)
+            ask_rearchive = bool(was_archived and not is_still_pending)
             archive_source = "review" if is_approved else "maker"
 
-            if ask_rearchive or was_archived:
+            if was_archived:
                 body["archived"] = 2
 
             # Update database record

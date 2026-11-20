@@ -901,6 +901,65 @@ def revoke_ihc_archive_files(work_dir, patient_data, ihc_data=None):
     return {"success": True, "removed": removed}
 
 
+def delete_ihc_report_files(work_dir, patient_data, ihc_data=None):
+    """
+    Safely moves ALL IHC files & folders for a patient to Recycle Bin via safe_delete_path:
+      1. 特殊患者归档/免疫组化/<patient_folder>
+      2. 已归档报告/<prefix>*_免疫组化报告.docx
+    Does NOT touch the patient's regular original report, draft, or photos.
+    """
+    p_no = patient_data.get("pathology_no", "")
+    p_name = patient_data.get("name", "")
+    p_no_clean = sanitize_filename(str(p_no).strip())
+    p_name_clean = sanitize_filename(str(p_name).strip())
+    prefix_base = f"{p_no_clean}_{p_name_clean}"
+    prefix = f"{prefix_base}_"
+
+    ihc_dir_recorded = (ihc_data or {}).get("ihc_dir", "")
+    ihc_doc_recorded = (ihc_data or {}).get("ihc_doc_path", "")
+    ihc_arch_recorded = (ihc_data or {}).get("archive_file", "")
+
+    # Pre-check locks before deleting anything
+    if ihc_doc_recorded and os.path.exists(ihc_doc_recorded):
+        _ensure_writable(ihc_doc_recorded)
+    if ihc_arch_recorded and os.path.exists(ihc_arch_recorded):
+        _ensure_writable(ihc_arch_recorded)
+
+    archive_root = get_archive_root_dir(work_dir)
+    if os.path.exists(archive_root):
+        for entry in os.listdir(archive_root):
+            if (entry.startswith(prefix) or entry.startswith(f"{prefix_base}.")) and is_ihc_archived_filename(entry):
+                _ensure_writable(os.path.join(archive_root, entry))
+
+    ihc_root = os.path.join(work_dir, "特殊患者归档", "免疫组化")
+    ihc_dirs_to_delete = []
+    if ihc_dir_recorded and os.path.exists(ihc_dir_recorded):
+        ihc_dirs_to_delete.append(os.path.normpath(ihc_dir_recorded))
+    if os.path.exists(ihc_root):
+        for entry in os.listdir(ihc_root):
+            full = os.path.normpath(os.path.join(ihc_root, entry))
+            if (entry.startswith(prefix) or entry == prefix_base) and os.path.isdir(full):
+                if full not in ihc_dirs_to_delete:
+                    ihc_dirs_to_delete.append(full)
+
+    for d in ihc_dirs_to_delete:
+        for root_p, _, files in os.walk(d):
+            for fn in files:
+                if fn.lower().endswith((".docx", ".doc")):
+                    _ensure_writable(os.path.join(root_p, fn))
+
+    removed = []
+    rev_arch = revoke_ihc_archive_files(work_dir, patient_data, ihc_data=ihc_data)
+    removed.extend(rev_arch.get("removed", []))
+
+    for d in ihc_dirs_to_delete:
+        if os.path.exists(d):
+            safe_delete_path(d)
+            removed.append(d)
+
+    return {"success": True, "removed": removed}
+
+
 def locate_patient_all_paths(work_dir, patient_data, ihc_data=None):
     """
     Returns a list of all existing files and directories associated with a patient.

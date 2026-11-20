@@ -919,6 +919,42 @@ def update_ihc_paths(db_path, pathology_no, ihc_dir, ihc_doc_path, ihc_photo_dir
     return get_ihc_report(db_path, p_no)
 
 
+def delete_ihc_report_and_clear_status(db_path, pathology_no):
+    """
+    Delete the independent IHC report row from ihc_reports and completely clear the
+    patient's IHC flag/status in patients table so it becomes an ordinary report.
+    """
+    p_no = str(pathology_no or "").strip().upper()
+    existing = get_patient(db_path, p_no)
+    if not existing:
+        return None
+
+    old_rev = str(existing.get("review_status", "") or "").strip()
+    is_pending = 1 if (existing.get("is_pending_review") == 1 or "待审核" in old_rev) else 0
+    is_recut = 1 if (existing.get("is_needs_recut") == 1 or "重切" in old_rev) else 0
+
+    if old_rev == "完成审核" and not is_pending and not is_recut:
+        new_rev = "完成审核"
+    elif is_pending or is_recut:
+        new_rev = build_review_status(bool(is_pending), False, bool(is_recut))
+    else:
+        new_rev = "已制作" if str(existing.get("final_report_path") or "").strip() else "未审核"
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ihc_reports WHERE pathology_no = ?", (p_no,))
+        cursor.execute("""
+            UPDATE patients SET
+                is_needs_ihc = 0,
+                review_status = ?,
+                updated_at = ?
+            WHERE pathology_no = ?
+        """, (new_rev, now_str, p_no))
+        conn.commit()
+    return get_patient(db_path, p_no)
+
+
 def _extract_joined_ihc_dict(row_dict):
     """Pop ihc_* aliased columns from joined query row into a nested ihc_report dict."""
     ihc_keys = {
@@ -1026,6 +1062,15 @@ def search_patients(db_path, query_params):
         SUB_DATE_EXPR,
         start_date=query_params.get("start_date", ""),
         end_date=query_params.get("end_date", "")
+    )
+
+    # 1b. Report date range filter
+    _append_date_filter(
+        conditions,
+        values,
+        REP_DATE_EXPR,
+        start_date=query_params.get("report_start_date", ""),
+        end_date=query_params.get("report_end_date", "")
     )
 
     # 2. Prefix filter
@@ -1303,4 +1348,33 @@ def get_patients_for_signing_sheet(db_path, start_date=None, end_date=None, pref
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(sql, values)
+        return [patient_row_to_dict(r) for r in cursor.fetchall()]
+
+
+def get_today_batch_archivable_patients(db_path, today_str=None):
+    """
+    Retrieve patients with today's report date that have a saved report not yet archived
+    (includes regular reports, IHC-only reports, and approved reports; excludes pending review / recut).
+    """
+    if not today_str:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+    conditions = [
+        "archived IN (0, 2)",
+        "final_report_path IS NOT NULL",
+        "TRIM(final_report_path) != ''",
+        f"({REP_DATE_EXPR} = ?)",
+        "("
+        "review_status = '完成审核' "
+        "OR ("
+        "is_pending_review = 0 AND is_needs_recut = 0 "
+        "AND (review_status IS NULL OR (review_status NOT LIKE '%待审核%' AND review_status NOT LIKE '%重切%'))"
+        ")"
+        ")"
+    ]
+    sql = "SELECT * FROM patients WHERE " + " AND ".join(conditions) + " ORDER BY pathology_no ASC"
+
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql, [today_str])
         return [patient_row_to_dict(r) for r in cursor.fetchall()]

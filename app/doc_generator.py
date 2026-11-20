@@ -16,7 +16,7 @@ import re
 import math
 import docx
 from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
@@ -38,6 +38,79 @@ def set_run_font(run, font_name="宋体", size_pt=12, bold=False):
     run._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
     run.font.size = Pt(size_pt)
     run.bold = bold
+
+
+def _estimate_sig_width_pt(text, font_size_pt=12.0):
+    """Estimate rendered width in pt for CJK/ASCII signature text in 宋体."""
+    return sum(font_size_pt * (1.0 if ord(c) > 127 else 0.52) for c in str(text))
+
+
+def _format_signature_paragraph(doc, p_sig_elem, table0, rep_doc, rev_doc, rep_date):
+    """
+    Format 报告医生 / 审核医生 / 报告日期 on a single fixed-alignment line using
+    Word tab stops so longer doctor names never push the date onto a wrapped line or next page.
+    """
+    p_sig_obj = docx.text.paragraph.Paragraph(p_sig_elem, doc)
+    part1 = f"报告医生：{rep_doc}"
+    part2 = f"审核医生：{rev_doc}"
+    part3 = f"报告日期：{rep_date}"
+
+    try:
+        sec = doc.sections[0]
+        printable_pt = (sec.page_width - sec.left_margin - sec.right_margin) / 12700.0
+    except Exception:
+        printable_pt = 523.3
+    max_right_pt = max(420.0, printable_pt - 2.0)
+
+    try:
+        t0_width_pt = sum((c.width or 0) for c in table0.rows[0].cells) / 12700.0
+    except Exception:
+        t0_width_pt = 0.0
+    base_right_pt = min(max_right_pt, t0_width_pt if t0_width_pt > 400.0 else 487.5)
+
+    sig_font_pt = 12.0
+    tab1_pt = 172.0
+    tab2_pt = base_right_pt
+
+    while True:
+        w1 = _estimate_sig_width_pt(part1, sig_font_pt)
+        w2 = _estimate_sig_width_pt(part2, sig_font_pt)
+        w3 = _estimate_sig_width_pt(part3, sig_font_pt)
+        tab1_pt = max(172.0, w1 + 14.0)
+        needed_right = tab1_pt + w2 + 12.0 + w3
+        if needed_right <= max_right_pt:
+            tab2_pt = max(base_right_pt, needed_right)
+            break
+        # Try shifting tab1 left slightly if rep_doc was short before shrinking font
+        compact_tab1 = w1 + 12.0
+        compact_right = compact_tab1 + w2 + 12.0 + w3
+        if compact_right <= max_right_pt:
+            tab1_pt = compact_tab1
+            tab2_pt = max(base_right_pt, compact_right)
+            break
+        if sig_font_pt <= 9.0:
+            tab1_pt = compact_tab1
+            tab2_pt = max_right_pt
+            break
+        sig_font_pt -= 0.5
+
+    p_sig_obj.clear()
+    sig_run = p_sig_obj.add_run(f"{part1}\t{part2}\t{part3}")
+    set_run_font(sig_run, "宋体", sig_font_pt)
+
+    pf = p_sig_obj.paragraph_format
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(0)
+    pf.left_indent = Pt(0)
+    pf.right_indent = Pt(0)
+    pf.first_line_indent = Pt(0)
+    pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    pf.line_spacing = Pt(15)
+    pf.keep_together = True
+    pf.widow_control = False
+    pf.tab_stops.clear_all()
+    pf.tab_stops.add_tab_stop(Pt(round(tab1_pt, 1)), WD_TAB_ALIGNMENT.LEFT)
+    pf.tab_stops.add_tab_stop(Pt(round(tab2_pt, 1)), WD_TAB_ALIGNMENT.RIGHT)
 
 def set_cell_margins(cell, top=30, bottom=30, left=30, right=30):
     """Set inner padding of a table cell in dxa (1 pt = 20 dxa)."""
@@ -455,21 +528,14 @@ def generate_report_file(templates_dir, output_path, data):
         p_pad.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
         p_pad.paragraph_format.line_spacing = Pt(15)
 
-    # Format 报告医生 / 审核医生 / 报告日期 signature paragraph
-    p_sig_obj = docx.text.paragraph.Paragraph(p_sig_elem, doc)
+    # Format 报告医生 / 审核医生 / 报告日期 signature paragraph on a single stable line
     rep_doc = data.get("report_doctor") or "张医生"
     rev_doc = data.get("review_doctor") or "李主任"
     rep_date = data.get("report_date")
     if not rep_date:
         import datetime
         rep_date = datetime.date.today().strftime("%Y年%m月%d日")
-    p_sig_obj.text = f"报告医生：{rep_doc}                审核医生：{rev_doc}                报告日期：{rep_date}"
-    p_sig_obj.paragraph_format.space_before = Pt(0)
-    p_sig_obj.paragraph_format.space_after = Pt(0)
-    p_sig_obj.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-    p_sig_obj.paragraph_format.line_spacing = Pt(15)
-    if p_sig_obj.runs:
-        set_run_font(p_sig_obj.runs[0], "宋体", 12)
+    _format_signature_paragraph(doc, p_sig_elem, table0, rep_doc, rev_doc, rep_date)
 
     # Format 病史 paragraph
     p_hist_obj = docx.text.paragraph.Paragraph(p_hist_elem, doc)

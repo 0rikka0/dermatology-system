@@ -124,6 +124,15 @@ def build_package():
     if os.path.exists(os.path.join(BASE_DIR, "README.md")):
         shutil.copy2(os.path.join(BASE_DIR, "README.md"), os.path.join(PACKAGE_DIR, "README.md"))
 
+    # Remove any runtime/config artifacts if accidentally present
+    for stale_name in (".server_runtime.json", "config.json"):
+        stale_path = os.path.join(PACKAGE_DIR, stale_name)
+        if os.path.exists(stale_path):
+            try:
+                os.remove(stale_path)
+            except Exception:
+                pass
+
     # 4. Generate Launcher Scripts in Package Root
     # Batch Launcher
     bat_content = """@echo off
@@ -142,8 +151,8 @@ if %errorlevel% neq 0 (
     pause
 )
 """
-    with open(os.path.join(PACKAGE_DIR, "启动系统.bat"), "w", encoding="utf-8") as f:
-        f.write(bat_content)
+    with open(os.path.join(PACKAGE_DIR, "启动系统.bat"), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(bat_content.replace("\r\n", "\n"))
 
     # Stop System Batch
     stop_bat_content = """@echo off
@@ -153,26 +162,41 @@ echo ======================================================
 echo           正在安全退出皮肤病理报告系统...
 echo ======================================================
 echo.
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8765"') do (
+cd /d "%~dp0"
+
+if exist "%~dp0runtime\\python.exe" (
+    "%~dp0runtime\\python.exe" -m app.instance_lock --stop
+    if %errorlevel% equ 0 goto done
+)
+
+set FOUND=0
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8765 " ^| findstr "LISTENING"') do (
     if not "%%a"=="0" (
         taskkill /f /pid %%a >nul 2>nul
-        echo 已成功终止占用 8765 端口的服务进程 (PID: %%a)
+        echo 已成功终止占用 8765 端口的服务进程 ^(PID: %%a^)
+        set FOUND=1
     )
 )
+if exist "%~dp0.server_runtime.json" del /f /q "%~dp0.server_runtime.json" >nul 2>nul
+if "%FOUND%"=="0" echo 未发现占用 8765 端口的运行中服务。
+
+:done
 echo.
 echo 系统服务已安全停止！
 timeout /t 2 >nul
 """
-    with open(os.path.join(PACKAGE_DIR, "停止系统.bat"), "w", encoding="utf-8") as f:
-        f.write(stop_bat_content)
+    with open(os.path.join(PACKAGE_DIR, "停止系统.bat"), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(stop_bat_content.replace("\r\n", "\n"))
 
     # VBS Silent Launcher (No black CMD box)
     vbs_content = """Set ws = CreateObject("Wscript.Shell")
-ws.currentdirectory = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
-ws.run "runtime\\pythonw.exe main.py", 0
+dim parentDir
+parentDir = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
+ws.currentdirectory = parentDir
+ws.run \"\"\"\" & parentDir & "\\runtime\\pythonw.exe\"\" \"\"\" & parentDir & "\\main.py\"\"\", 0
 """
-    with open(os.path.join(PACKAGE_DIR, "启动系统(无黑框后台版).vbs"), "w", encoding="utf-8") as f:
-        f.write(vbs_content)
+    with open(os.path.join(PACKAGE_DIR, "启动系统(无黑框后台版).vbs"), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(vbs_content.replace("\r\n", "\n"))
 
     # Readme
     readme_content = """============================================================
@@ -188,7 +212,9 @@ ws.run "runtime\\pythonw.exe main.py", 0
 
 【快速启动】
 1. 双击运行【启动系统.bat】（推荐，带运行状态控制台）；
-   或双击【启动系统(无黑框后台版).vbs】（静默在后台启动）；
+   或双击【启动系统(无黑框后台版).vbs】（静默在后台启动，支持防多开单图标进入：
+   后台运行中关闭浏览器后再次双击仅自动打开系统网页，不会重复开启后台进程，
+   可右键“发送到 -> 桌面快捷方式”作为日常唯一入口图标）；
 2. 系统会自动启动本地微服务，并自动调用系统默认浏览器打开界面：
    http://127.0.0.1:8765
 

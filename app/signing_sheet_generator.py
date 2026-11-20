@@ -21,32 +21,46 @@ SURGERY_DATE_NOTICE = "本手术日期仅供参考，若本页未找到可在相
 
 def get_previous_workday(date_str):
     """Return the previous weekday (Mon-Fri) before date_str (YYYY-MM-DD)."""
+    start_s, _ = get_surgery_date_bounds(date_str)
+    return start_s
+
+
+def get_surgery_date_bounds(date_str):
+    """
+    For a submission date (YYYY-MM-DD), return (start_str, end_str) of the surgery window:
+    - When crossing a weekend (previous workday is Friday, e.g. Monday submission),
+      includes the weekend days up to the day before submission (Fri ~ Sun).
+    - When not crossing a weekend (Tue-Fri submission), both bounds equal the single previous workday.
+    """
     if not date_str:
-        return ""
+        return "", ""
     try:
         dt = datetime.strptime(str(date_str).strip()[:10], "%Y-%m-%d").date()
     except ValueError:
-        return ""
-    prev = dt - timedelta(days=1)
-    while prev.weekday() >= 5:  # 5=Saturday, 6=Sunday
-        prev -= timedelta(days=1)
-    return prev.strftime("%Y-%m-%d")
+        return "", ""
+    prev_wd = dt - timedelta(days=1)
+    while prev_wd.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        prev_wd -= timedelta(days=1)
+    prev_cal = dt - timedelta(days=1)
+    end_dt = prev_cal if prev_cal > prev_wd else prev_wd
+    return prev_wd.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+
 
 def compute_surgery_date_str(start_date=None, end_date=None, patients=None):
-    """Compute surgery date string as the previous workday of submission date(s)."""
+    """Compute surgery date string, expanding Friday previous workday to include weekend."""
     s = (start_date or "").strip()
     e = (end_date or "").strip()
     if s and e:
-        ps = get_previous_workday(s)
-        pe = get_previous_workday(e)
+        ps, _ = get_surgery_date_bounds(s)
+        _, pe = get_surgery_date_bounds(e)
         if ps and pe:
             return ps if ps == pe else f"{ps} 至 {pe}"
     elif s:
-        ps = get_previous_workday(s)
+        ps, _ = get_surgery_date_bounds(s)
         if ps:
             return f"{ps} 起"
     elif e:
-        pe = get_previous_workday(e)
+        _, pe = get_surgery_date_bounds(e)
         if pe:
             return f"截至 {pe}"
 
@@ -57,8 +71,8 @@ def compute_surgery_date_str(start_date=None, end_date=None, patients=None):
             if str(p.get("submission_date_raw") or "").strip()
         })
         if raw_dates:
-            ps = get_previous_workday(raw_dates[0])
-            pe = get_previous_workday(raw_dates[-1])
+            ps, _ = get_surgery_date_bounds(raw_dates[0])
+            _, pe = get_surgery_date_bounds(raw_dates[-1])
             if ps and pe:
                 return ps if ps == pe else f"{ps} 至 {pe}"
     return "-"

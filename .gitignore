@@ -35,6 +35,7 @@ export_staging/
 *.sqlite3
 database.db
 config.json
+.server_runtime.json
 temp_*
 *.temp
 .temp_imgs/

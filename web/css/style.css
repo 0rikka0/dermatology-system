@@ -412,6 +412,14 @@ textarea.form-control {
   background-color: #256628;
 }
 
+.btn-danger {
+  background-color: var(--danger);
+  color: white;
+}
+.btn-danger:hover {
+  background-color: #b71c1c;
+}
+
 .btn-sm {
   padding: 4px 10px;
   font-size: 12px;

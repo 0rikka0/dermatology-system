@@ -1,505 +1,608 @@
 # -*- coding: utf-8 -*-
 """
-生成皮肤病理报告系统快速入门与标准操作规程 (SOP) 手册 (PDF 格式, 含高清示意图)
-严格执行脱敏处理，排版清晰易读，覆盖全流程 SOP。
+皮肤病理报告系统 - 快速入门操作手册 PDF 生成脚本 (v5.0 标准 SOP 版)
+定位：纯临床实操标准作业程序 (SOP)，聚焦“需要做什么、怎么做、不能做什么”，
+      语言通俗简练，配系统流程图与脱敏 WebUI 实景标注截图。
 """
 
+import argparse
 import os
 import sys
+
 from PIL import Image as PILImage, ImageDraw, ImageFont
-from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, KeepTogether, HRFlowable, PageBreak
-)
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
+from reportlab.platypus import (
+    HRFlowable,
+    Image,
+    KeepTogether,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
-FONT_REGULAR = "C:/Windows/Fonts/msyh.ttc"
+# ================= 1. 字体与配色 =================
+FONT_REG = "C:/Windows/Fonts/msyh.ttc"
 FONT_BOLD = "C:/Windows/Fonts/msyhbd.ttc"
+if not os.path.exists(FONT_REG):
+    FONT_REG = "C:/Windows/Fonts/simhei.ttf"
+    FONT_BOLD = FONT_REG
 
-pdfmetrics.registerFont(TTFont("YaHei", FONT_REGULAR))
+pdfmetrics.registerFont(TTFont("YaHei", FONT_REG))
 pdfmetrics.registerFont(TTFont("YaHeiBold", FONT_BOLD))
 
+NAVY = colors.HexColor("#1E3A5F")
+BLUE = colors.HexColor("#2563EB")
+LIGHT_BLUE = colors.HexColor("#EFF6FF")
+GREEN = colors.HexColor("#15803D")
+LIGHT_GREEN = colors.HexColor("#F0FDF4")
+RED = colors.HexColor("#B91C1C")
+LIGHT_RED = colors.HexColor("#FEF2F2")
+AMBER = colors.HexColor("#B45309")
+LIGHT_AMBER = colors.HexColor("#FFFBEB")
+DARK_TEXT = colors.HexColor("#1F2937")
+GRAY_TEXT = colors.HexColor("#4B5563")
+BORDER_GRAY = colors.HexColor("#CBD5E1")
+ROW_ALT = colors.HexColor("#F8FAFC")
 
-def get_pil_font(size, bold=False):
-    return ImageFont.truetype(FONT_BOLD if bold else FONT_REGULAR, size)
+
+def _pil_font(size, bold=False):
+    path = FONT_BOLD if bold else FONT_REG
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return ImageFont.load_default()
 
 
-def generate_diagram_workflow(out_path):
-    """生成系统全景标准工作流示意图"""
-    w, h = 1600, 390
-    im = PILImage.new("RGB", (w, h), (248, 250, 252))
-    draw = ImageDraw.Draw(im)
+# ================= 2. 矢量级简明示意图生成 =================
+def create_workflow_diagram(out_path):
+    """生成 6 步全流程极简看板图"""
+    W, H = 1600, 360
+    img = PILImage.new("RGB", (W, H), "#FFFFFF")
+    draw = ImageDraw.Draw(img)
 
-    f_title = get_pil_font(24, bold=True)
-    f_step = get_pil_font(20, bold=True)
-    f_desc = get_pil_font(17, bold=False)
+    f_title = _pil_font(26, bold=True)
+    f_step = _pil_font(22, bold=True)
+    f_desc = _pil_font(18, bold=False)
+
+    draw.text((40, 20), "日常工作 6 步极简总览（按从左到右顺序完成）", fill="#1E3A5F", font=f_title)
 
     steps = [
-        ("01", "患者信息录入", "填写基本资料与病史\n选1-9图与送检部位\n自动建初稿及照片夹", (59, 130, 246)),
-        ("02", "报告制作排版", "读取病理照片与词库\n常规及纯组化直接归档\n待审/重切双草稿分流", (16, 185, 129)),
-        ("03", "待审/重切审核", "待审核与重切完全等价\n病理照读复制后目录\n保存双同步·完成待归档", (245, 158, 11)),
-        ("04", "独立免疫组化", "基于已归档原报告创建\n独立编辑保存不动原件\n加后缀双份报告并存", (139, 92, 246)),
-        ("05", "三列表输出打印", "常规/特殊/组化物理隔离\nWord COM 仅打第1页\n生成Word+Excel签名单", (239, 68, 68)),
+        ("1. 点图标进入", "双击桌面快捷方式\n自动拉起网页\n(有后台不重开)", "#2563EB", "#EFF6FF"),
+        ("2. 登记建档", "选前缀点自动编号\n填信息与图数(1-9)\n建初稿与照片夹", "#0284C7", "#F0F9FF"),
+        ("3. 放图出初稿", "照片放入对应目录\n勾选常用诊断词条\n生成并预览报告", "#0D9488", "#F0FDFA"),
+        ("4. 复核/挂起", "无误直接点归档\n需重切进报告审核\n支持双草稿并行改", "#D97706", "#FFFBEB"),
+        ("5. 加做组化", "如加做免疫组化\n进独立组化页签\n生成第二份报告", "#7C3AED", "#F5F3FF"),
+        ("6. 输出与收尾", "批量打印/签名单\n历史按日随时查改\n下班点停止系统", "#15803D", "#F0FDF4"),
     ]
 
-    card_w = 274
-    card_h = 290
-    gap = 36
-    start_x = 43
-    start_y = 48
+    box_w, box_h = 228, 220
+    start_x, gap = 36, 30
+    y0 = 86
 
-    for i, (num, title, desc, color) in enumerate(steps):
-        x = start_x + i * (card_w + gap)
-        y = start_y
+    for idx, (title, body, border_hex, bg_hex) in enumerate(steps):
+        x0 = start_x + idx * (box_w + gap)
+        x1, y1 = x0 + box_w, y0 + box_h
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=14, fill=bg_hex, outline=border_hex, width=3)
+        draw.rounded_rectangle([x0, y0, x1, y0 + 50], radius=14, fill=border_hex)
+        draw.rectangle([x0, y0 + 30, x1, y0 + 50], fill=border_hex)
+        draw.text((x0 + 16, y0 + 11), title, fill="#FFFFFF", font=f_step)
+        draw.multiline_text((x0 + 16, y0 + 68), body, fill="#1F2937", font=f_desc, spacing=10)
 
-        draw.rounded_rectangle([x + 3, y + 3, x + card_w + 3, y + card_h + 3], radius=16, fill=(226, 232, 240))
-        draw.rounded_rectangle([x, y, x + card_w, y + card_h], radius=16, fill=(255, 255, 255), outline=color, width=3)
+        if idx < len(steps) - 1:
+            ax0, ax1 = x1 + 4, x1 + gap - 4
+            ay = y0 + box_h // 2
+            draw.line([(ax0, ay), (ax1 - 6, ay)], fill="#64748B", width=4)
+            draw.polygon([(ax1, ay), (ax1 - 10, ay - 7), (ax1 - 10, ay + 7)], fill="#64748B")
 
-        draw.rounded_rectangle([x, y, x + card_w, y + 66], radius=14, fill=color)
-        draw.rectangle([x, y + 48, x + card_w, y + 66], fill=color)
-
-        draw.text((x + 16, y + 16), f"SOP-{num}", font=f_step, fill=(255, 255, 255))
-        draw.text((x + 18, y + 86), title, font=f_title, fill=(30, 41, 59))
-
-        dy = y + 136
-        for line in desc.split("\n"):
-            draw.text((x + 18, dy), "• " + line, font=f_desc, fill=(100, 116, 139))
-            dy += 36
-
-        if i < len(steps) - 1:
-            ax = x + card_w + 6
-            ay = y + card_h // 2
-            draw.line([ax, ay, ax + 20, ay], fill=(148, 163, 184), width=4)
-            draw.polygon([(ax + 20, ay - 8), (ax + 30, ay), (ax + 20, ay + 8)], fill=(148, 163, 184))
-
-    im.save(out_path, quality=95)
+    img.save(out_path, "PNG")
+    return out_path
 
 
-def generate_diagram_special_flow(out_path):
-    """生成“待审核/重切双草稿流”与“独立免疫组化双报告流”对照示意图"""
-    w, h = 1540, 520
-    im = PILImage.new("RGB", (w, h), (248, 250, 252))
-    draw = ImageDraw.Draw(im)
+def create_layout_diagram(out_path):
+    """生成 1-9 张图 1 页纸紧凑排版示意图"""
+    W, H = 1500, 320
+    img = PILImage.new("RGB", (W, H), "#FFFFFF")
+    draw = ImageDraw.Draw(img)
 
-    f_title = get_pil_font(22, bold=True)
-    f_badge = get_pil_font(17, bold=True)
-    f_sub = get_pil_font(16, bold=False)
+    f_title = _pil_font(24, bold=True)
+    f_sub = _pil_font(20, bold=True)
+    f_small = _pil_font(17, bold=False)
 
-    # Outer frame
-    draw.rounded_rectangle([20, 16, w - 20, h - 16], radius=16, fill=(255, 255, 255), outline=(203, 213, 225), width=2)
+    draw.text((30, 14), "图文排版速览：系统按 1-9 张图自动切换行列比例，尽量保证 1 页 A4 打完", fill="#1E3A5F", font=f_title)
 
-    # ---- Track 1: 待审核 / 重切 ----
-    draw.rounded_rectangle([40, 36, 1500, 252], radius=12, fill=(255, 251, 235), outline=(245, 158, 11), width=2)
-    draw.text((60, 48), "轨道 1：待审核 / 重切（处理逻辑完全等价 · 同一份报告双草稿同步）", font=f_title, fill=(180, 83, 9))
-
-    t1_boxes = [
-        (60, "1. 制作保存分流", "输出草稿至 病理报告输出\\\n仅复制病理照片+草稿至\n特殊归档/待审核(或重切)", (254, 243, 199), (217, 119, 6), (180, 83, 9)),
-        (415, "2. 审核区照片与编辑", "临床照查 未归档\\临床照片\n病理照打开/复制 特殊归档目录\n保存双向同步两份草稿+新增图", (255, 255, 255), (217, 119, 6), (30, 41, 59)),
-        (770, "3. 完成审核标记", "审核保存不动 已归档报告\n点 [完成审核] 改状态为 完成审核\n(已归档被改则置 archived=2)", (236, 253, 245), (16, 185, 129), (4, 120, 87)),
-        (1125, "4. 回制作区归档", "回 [报告制作] 点 [一键归档]\n写入 已归档报告/<原名>.docx\n待审核/重切目录移入 完成审核", (240, 253, 250), (13, 148, 136), (15, 118, 110)),
+    cards = [
+        ("1~3 张图", "1 行横排", (1, 3), "#2563EB"),
+        ("4 张图", "2 x 2 田字格", (2, 2), "#0284C7"),
+        ("5~6 张图", "3 列 x 2 行", (2, 3), "#0D9488"),
+        ("7~9 张图", "3 列 x 3 行", (3, 3), "#7C3AED"),
     ]
-    bw, bh = 315, 140
-    for idx, (bx, btitle, btxt, bg, bd, fg) in enumerate(t1_boxes):
-        by = 92
-        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=10, fill=bg, outline=bd, width=2)
-        draw.text((bx + 14, by + 12), btitle, font=f_badge, fill=fg)
-        dy = by + 44
-        for ln in btxt.split("\n"):
-            draw.text((bx + 14, dy), ln, font=f_sub, fill=(55, 65, 81))
-            dy += 28
-        if idx < len(t1_boxes) - 1:
-            ax = bx + bw + 6
-            ay = by + bh // 2
-            draw.line([ax, ay, ax + 24, ay], fill=(217, 119, 6), width=3)
-            draw.polygon([(ax + 24, ay - 7), (ax + 34, ay), (ax + 24, ay + 7)], fill=(217, 119, 6))
+    cw, ch = 330, 220
+    for idx, (lbl, mode, (rows, cols), col_hex) in enumerate(cards):
+        x0 = 30 + idx * (cw + 40)
+        y0 = 64
+        draw.rounded_rectangle([x0, y0, x0 + cw, y0 + ch], radius=12, fill="#F8FAFC", outline=col_hex, width=3)
+        draw.text((x0 + 18, y0 + 12), f"{lbl}：{mode}", fill=col_hex, font=f_sub)
 
-    # ---- Track 2: 独立免疫组化 ----
-    draw.rounded_rectangle([40, 276, 1500, 492], radius=12, fill=(245, 243, 255), outline=(124, 58, 237), width=2)
-    draw.text((60, 288), "轨道 2：需免疫组化（独立双报告机制 · 原报告常规出片后，再独立制作第二份免疫组化报告）", font=f_title, fill=(109, 40, 217))
+        gx, gy = x0 + 24, y0 + 54
+        gw, gh = cw - 48, ch - 74
+        cell_w = (gw - (cols - 1) * 8) // cols
+        cell_h = (gh - (rows - 1) * 8) // rows
+        num = 1
+        for r in range(rows):
+            for c in range(cols):
+                cx0 = gx + c * (cell_w + 8)
+                cy0 = gy + r * (cell_h + 8)
+                draw.rectangle([cx0, cy0, cx0 + cell_w, cy0 + cell_h], fill="#DBEAFE", outline="#60A5FA", width=2)
+                draw.text((cx0 + cell_w // 2 - 10, cy0 + cell_h // 2 - 10), f"图{num}", fill="#1E3A5F", font=f_small)
+                num += 1
 
-    t2_boxes = [
-        (60, "1. 原报告按常规走", "仅标 需免疫组化 不视作待审\n可在制作区直接归档和打印原报告\n(若兼待审核则按轨道1先审归)", (238, 242, 255), (99, 102, 241), (67, 56, 202)),
-        (415, "2. 创建免疫组化副本", "进 [免疫组化] 点 [创建组化报告]\n须原报告已在 已归档报告\\\n复制原报告+病理照片(无临床照)", (255, 255, 255), (124, 58, 237), (30, 41, 59)),
-        (770, "3. 独立编辑与保存", "打开/复制组化照片夹加特染图\n点 [保存] 仅改 特殊归档/免疫组化\n绝不动原报告与 patients 主表", (255, 255, 255), (124, 58, 237), (30, 41, 59)),
-        (1125, "4. 独立归档并存输出", "已归档报告 生成 _免疫组化报告\n与原报告并存 · 不进 完成审核\n在 [报告输出] 列表3独立打印", (243, 232, 255), (147, 51, 234), (107, 33, 168)),
+    img.save(out_path, "PNG")
+    return out_path
+
+
+# ================= 3. PDF 组件构建 =================
+def _styles():
+    base = getSampleStyleSheet()
+    return {
+        "title": ParagraphStyle(
+            "ManualTitle",
+            parent=base["Title"],
+            fontName="YaHeiBold",
+            fontSize=22,
+            leading=28,
+            textColor=colors.white,
+            alignment=TA_CENTER,
+        ),
+        "subtitle": ParagraphStyle(
+            "ManualSubtitle",
+            parent=base["Normal"],
+            fontName="YaHei",
+            fontSize=10.5,
+            leading=15,
+            textColor=colors.HexColor("#E2E8F0"),
+            alignment=TA_CENTER,
+        ),
+        "h1": ParagraphStyle(
+            "H1",
+            parent=base["Heading1"],
+            fontName="YaHeiBold",
+            fontSize=13.5,
+            leading=19,
+            textColor=NAVY,
+            spaceBefore=6,
+            spaceAfter=4,
+        ),
+        "body": ParagraphStyle(
+            "Body",
+            parent=base["Normal"],
+            fontName="YaHei",
+            fontSize=9.5,
+            leading=14.5,
+            textColor=DARK_TEXT,
+            wordWrap="CJK",
+        ),
+        "sop_head": ParagraphStyle(
+            "SopHead",
+            parent=base["Normal"],
+            fontName="YaHeiBold",
+            fontSize=10,
+            leading=14,
+            textColor=NAVY,
+            wordWrap="CJK",
+        ),
+        "sop_cell": ParagraphStyle(
+            "SopCell",
+            parent=base["Normal"],
+            fontName="YaHei",
+            fontSize=9,
+            leading=14.2,
+            textColor=DARK_TEXT,
+            wordWrap="CJK",
+        ),
+        "caption": ParagraphStyle(
+            "Caption",
+            parent=base["Normal"],
+            fontName="YaHei",
+            fontSize=8.5,
+            leading=12,
+            textColor=GRAY_TEXT,
+            alignment=TA_CENTER,
+            wordWrap="CJK",
+        ),
+    }
+
+
+def _sop_card(st, sop_id, title, need_do, how_to, do_not):
+    """生成标准化三栏 SOP 卡片：需要做什么 / 怎么做 / 不能做什么"""
+    header = Paragraph(f"<b>{sop_id}｜{title}</b>", ParagraphStyle(
+        "CardTitle", fontName="YaHeiBold", fontSize=11, leading=15, textColor=colors.white
+    ))
+    rows = [
+        [header, ""],
+        [
+            Paragraph("<b>需要做什么</b>", ParagraphStyle("L1", fontName="YaHeiBold", fontSize=9.5, leading=13, textColor=BLUE)),
+            Paragraph(need_do, st["sop_cell"]),
+        ],
+        [
+            Paragraph("<b>怎么做</b>", ParagraphStyle("L2", fontName="YaHeiBold", fontSize=9.5, leading=13, textColor=GREEN)),
+            Paragraph(how_to, st["sop_cell"]),
+        ],
+        [
+            Paragraph("<b>不能做什么</b>", ParagraphStyle("L3", fontName="YaHeiBold", fontSize=9.5, leading=13, textColor=RED)),
+            Paragraph(do_not, st["sop_cell"]),
+        ],
     ]
-    for idx, (bx, btitle, btxt, bg, bd, fg) in enumerate(t2_boxes):
-        by = 332
-        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=10, fill=bg, outline=bd, width=2)
-        draw.text((bx + 14, by + 12), btitle, font=f_badge, fill=fg)
-        dy = by + 44
-        for ln in btxt.split("\n"):
-            draw.text((bx + 14, dy), ln, font=f_sub, fill=(55, 65, 81))
-            dy += 28
-        if idx < len(t2_boxes) - 1:
-            ax = bx + bw + 6
-            ay = by + bh // 2
-            draw.line([ax, ay, ax + 24, ay], fill=(124, 58, 237), width=3)
-            draw.polygon([(ax + 24, ay - 7), (ax + 34, ay), (ax + 24, ay + 7)], fill=(124, 58, 237))
-
-    im.save(out_path, quality=95)
-
-
-def generate_diagram_page_layout(out_path):
-    """生成版面控制与首页单页打印示意图"""
-    w, h = 1400, 380
-    im = PILImage.new("RGB", (w, h), (248, 250, 252))
-    draw = ImageDraw.Draw(im)
-
-    f_title = get_pil_font(22, bold=True)
-    f_sub = get_pil_font(17, bold=False)
-    f_badge = get_pil_font(17, bold=True)
-
-    p1_x, p1_y, p1_w, p1_h = 90, 32, 460, 316
-    draw.rounded_rectangle([p1_x + 4, p1_y + 4, p1_x + p1_w + 4, p1_y + p1_h + 4], radius=12, fill=(226, 232, 240))
-    draw.rounded_rectangle([p1_x, p1_y, p1_x + p1_w, p1_y + p1_h], radius=12, fill=(255, 255, 255), outline=(59, 130, 246), width=2)
-    draw.rectangle([p1_x, p1_y, p1_x + p1_w, p1_y + 36], fill=(59, 130, 246))
-    draw.text((p1_x + 15, p1_y + 8), "【第 1 页】法定病理报告单 (Word COM 仅打此页)", font=f_badge, fill=(255, 255, 255))
-
-    draw.rectangle([p1_x + 20, p1_y + 48, p1_x + p1_w - 20, p1_y + 84], fill=(241, 245, 249), outline=(203, 213, 225))
-    draw.text((p1_x + 30, p1_y + 56), "表头: 病理号 / 姓名 / 性别 / 年龄 / 送检部位", font=f_sub, fill=(71, 85, 105))
-
-    draw.rectangle([p1_x + 20, p1_y + 94, p1_x + p1_w - 20, p1_y + 164], fill=(238, 242, 255), outline=(199, 210, 254))
-    draw.text((p1_x + 30, p1_y + 104), "显微图像排版区 (1-9图自动行数补偿)", font=f_badge, fill=(67, 56, 202))
-    draw.text((p1_x + 30, p1_y + 134), "图片下方精确对齐部位标注 (1.部位名)", font=f_sub, fill=(100, 116, 139))
-
-    draw.rectangle([p1_x + 20, p1_y + 174, p1_x + p1_w - 20, p1_y + 244], fill=(240, 253, 244), outline=(187, 247, 208))
-    draw.text((p1_x + 30, p1_y + 184), "镜下描述与病理诊断 (锁定 15 磅固定行距)", font=f_badge, fill=(22, 101, 52))
-    draw.text((p1_x + 30, p1_y + 214), "自动补偿空行，严防签名溢出到第二页", font=f_sub, fill=(100, 116, 139))
-
-    draw.rectangle([p1_x + 20, p1_y + 254, p1_x + p1_w - 20, p1_y + 296], fill=(254, 243, 199), outline=(252, 211, 77))
-    draw.text((p1_x + 30, p1_y + 264), "署名栏: 报告医生 / 审核医生 / 报告日期", font=f_badge, fill=(180, 83, 9))
-
-    draw.line([595, 190, 725, 190], fill=(37, 99, 235), width=6)
-    draw.polygon([(725, 180), (745, 190), (725, 200)], fill=(37, 99, 235))
-    draw.rounded_rectangle([585, 122, 735, 166], radius=8, fill=(37, 99, 235))
-    draw.text((602, 134), "Word COM 打印", font=f_badge, fill=(255, 255, 255))
-    draw.text((600, 210), "只打第 1 页", font=f_title, fill=(220, 38, 38))
-    draw.text((585, 244), "自动跳过第 2 页附页", font=f_sub, fill=(100, 116, 139))
-
-    p2_x, p2_y, p2_w, p2_h = 790, 32, 460, 316
-    draw.rounded_rectangle([p2_x + 4, p2_y + 4, p2_x + p2_w + 4, p2_y + p2_h + 4], radius=12, fill=(226, 232, 240))
-    draw.rounded_rectangle([p2_x, p2_y, p2_x + p2_w, p2_y + p2_h], radius=12, fill=(255, 255, 255), outline=(148, 163, 184), width=2)
-    draw.rectangle([p2_x, p2_y, p2_x + p2_w, p2_y + 36], fill=(148, 163, 184))
-    draw.text((p2_x + 15, p2_y + 8), "【第 2 页】临床病史附页 (电子留档专用)", font=f_badge, fill=(255, 255, 255))
-
-    draw.rectangle([p2_x + 20, p2_y + 58, p2_x + p2_w - 20, p2_y + 200], fill=(248, 250, 252), outline=(226, 232, 240))
-    draw.text((p2_x + 30, p2_y + 74), "详细临床病史与送检特征记录:", font=f_badge, fill=(71, 85, 105))
-    draw.text((p2_x + 30, p2_y + 112), "• 完整留存 .docx 归档文件内可追溯", font=f_sub, fill=(100, 116, 139))
-    draw.text((p2_x + 30, p2_y + 148), "• 纸质输出自动跳过，节约临床耗材", font=f_sub, fill=(100, 116, 139))
-
-    draw.rounded_rectangle([p2_x + 75, p2_y + 234, p2_x + 385, p2_y + 286], radius=10, fill=(254, 226, 226), outline=(239, 68, 68), width=2)
-    draw.text((p2_x + 102, p2_y + 247), "免打印附页 · 防止多页废纸", font=f_title, fill=(220, 38, 38))
-
-    im.save(out_path, quality=95)
+    tbl = Table(rows, colWidths=[26 * mm, 148 * mm])
+    tbl.setStyle(TableStyle([
+        ("SPAN", (0, 0), (1, 0)),
+        ("BACKGROUND", (0, 0), (1, 0), NAVY),
+        ("BACKGROUND", (0, 1), (0, 1), LIGHT_BLUE),
+        ("BACKGROUND", (1, 1), (1, 1), colors.white),
+        ("BACKGROUND", (0, 2), (0, 2), LIGHT_GREEN),
+        ("BACKGROUND", (1, 2), (1, 2), colors.white),
+        ("BACKGROUND", (0, 3), (0, 3), LIGHT_RED),
+        ("BACKGROUND", (1, 3), (1, 3), colors.HexColor("#FFFBFB")),
+        ("BOX", (0, 0), (-1, -1), 0.9, NAVY),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_GRAY),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    return tbl
 
 
-class NumberedCanvas(canvas.Canvas):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._saved_page_states = []
-
-    def showPage(self):
-        self._saved_page_states.append(dict(self.__dict__))
-        self._startPage()
-
-    def save(self):
-        num_pages = len(self._saved_page_states)
-        print(f"[INFO] Total generated PDF pages: {num_pages}")
-        for state in self._saved_page_states:
-            self.__dict__.update(state)
-            self.draw_page_decorations(num_pages)
-            super().showPage()
-        super().save()
-
-    def draw_page_decorations(self, page_count):
-        self.saveState()
-        self.setFont("YaHei", 8.5)
-        self.setFillColor(colors.HexColor("#64748b"))
-
-        if self._pageNumber > 1:
-            self.drawString(50, 804, "皮肤病理报告系统 v1.4 — 快速入门与标准操作规程 (SOP) 手册 (脱敏图文版)")
-            self.setStrokeColor(colors.HexColor("#e2e8f0"))
-            self.setLineWidth(0.5)
-            self.line(50, 796, 545, 796)
-
-        page_str = f"第 {self._pageNumber} 页 / 共 {page_count} 页"
-        self.drawRightString(545, 34, page_str)
-        self.drawString(50, 34, "标准操作 SOP · 质控安全隔离 · 离线便携运行")
-        self.setStrokeColor(colors.HexColor("#e2e8f0"))
-        self.setLineWidth(0.5)
-        self.line(50, 46, 545, 46)
-        self.restoreState()
+def _add_screenshot(story, st, screenshots_dir, filename, caption, max_w_mm=174, max_h_mm=108):
+    if not screenshots_dir:
+        return
+    fpath = os.path.join(screenshots_dir, filename)
+    if not os.path.exists(fpath):
+        return
+    with PILImage.open(fpath) as im:
+        pw, ph = im.size
+    ratio = min((max_w_mm * mm) / pw, (max_h_mm * mm) / ph)
+    w, h = pw * ratio, ph * ratio
+    img_flow = Image(fpath, width=w, height=h)
+    box = Table([[img_flow], [Paragraph(caption, st["caption"])]], colWidths=[max_w_mm * mm])
+    box.setStyle(TableStyle([
+        ("BOX", (0, 0), (0, 0), 0.6, BORDER_GRAY),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    story.append(Spacer(1, 3 * mm))
+    story.append(box)
 
 
-def build_manual_pdf(pdf_path):
-    work_dir = os.path.dirname(pdf_path)
+def _page_footer(canvas, doc):
+    canvas.saveState()
+    canvas.setFont("YaHei", 8)
+    canvas.setFillColor(GRAY_TEXT)
+    canvas.drawString(18 * mm, 10 * mm, "皮肤病理报告系统 v5.0｜标准操作手册 (SOP)")
+    canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"第 {doc.page} 页")
+    canvas.restoreState()
+
+
+def build_manual_pdf(pdf_path, screenshots_dir=None):
+    work_dir = os.path.dirname(os.path.abspath(pdf_path))
     img_dir = os.path.join(work_dir, ".temp_imgs")
     os.makedirs(img_dir, exist_ok=True)
 
-    diag1 = os.path.join(img_dir, "diag1_workflow.png")
-    diag2 = os.path.join(img_dir, "diag2_special.png")
-    diag3 = os.path.join(img_dir, "diag3_layout.png")
-
-    generate_diagram_workflow(diag1)
-    generate_diagram_special_flow(diag2)
-    generate_diagram_page_layout(diag3)
+    diag_workflow = create_workflow_diagram(os.path.join(img_dir, "diag_sop_workflow.png"))
+    diag_layout = create_layout_diagram(os.path.join(img_dir, "diag_sop_layout.png"))
 
     doc = SimpleDocTemplate(
         pdf_path,
         pagesize=A4,
-        leftMargin=50,
-        rightMargin=50,
-        topMargin=52,
-        bottomMargin=52
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=14 * mm,
+        bottomMargin=16 * mm,
+        title="皮肤病理报告系统 快速入门操作手册 (SOP v5.0)",
     )
-
-    s_title = ParagraphStyle("DocTitle", fontName="YaHeiBold", fontSize=22, leading=28, textColor=colors.HexColor("#0f172a"), alignment=1, spaceAfter=6)
-    s_subtitle = ParagraphStyle("DocSubtitle", fontName="YaHei", fontSize=11.5, leading=17, textColor=colors.HexColor("#475569"), alignment=1, spaceAfter=10)
-    s_badge = ParagraphStyle("Badge", fontName="YaHei", fontSize=8.8, leading=13, textColor=colors.HexColor("#0284c7"), alignment=1, spaceAfter=14)
-    s_h1 = ParagraphStyle("H1", fontName="YaHeiBold", fontSize=13.5, leading=20, textColor=colors.HexColor("#1e3a8a"), spaceBefore=12, spaceAfter=6, keepWithNext=True)
-    s_h2 = ParagraphStyle("H2", fontName="YaHeiBold", fontSize=11, leading=16, textColor=colors.HexColor("#0369a1"), spaceBefore=8, spaceAfter=4, keepWithNext=True)
-    s_body = ParagraphStyle("Body", fontName="YaHei", fontSize=9.2, leading=14.5, textColor=colors.HexColor("#334155"), spaceAfter=4)
-    s_bold = ParagraphStyle("BodyBold", fontName="YaHeiBold", fontSize=9.2, leading=14.5, textColor=colors.HexColor("#1e293b"), spaceBefore=5, spaceAfter=2, keepWithNext=True)
-    s_tip = ParagraphStyle("Tip", fontName="YaHei", fontSize=8.8, leading=13.8, textColor=colors.HexColor("#0f766e"))
-    s_warn = ParagraphStyle("Warn", fontName="YaHei", fontSize=8.8, leading=14, textColor=colors.HexColor("#991b1b"))
-    s_tbl = ParagraphStyle("Tbl", fontName="YaHei", fontSize=8.3, leading=12, textColor=colors.HexColor("#334155"))
-    s_tbl_b = ParagraphStyle("TblB", fontName="YaHeiBold", fontSize=8.4, leading=12.5, textColor=colors.HexColor("#0f172a"))
-    s_tbl_hdr = ParagraphStyle("TblHdr", fontName="YaHeiBold", fontSize=8.6, leading=13, textColor=colors.HexColor("#ffffff"))
-
+    st = _styles()
     story = []
-    W = 495
 
-    def make_callout(html_text, bg="#f0fdfa", border="#99f6e4", style=s_tip, border_w=1):
-        t = Table([[Paragraph(html_text, style)]], colWidths=[W])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor(bg)),
-            ('BOX', (0, 0), (-1, -1), border_w, colors.HexColor(border)),
-            ('LEFTPADDING', (0, 0), (-1, -1), 10),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
-            ('TOPPADDING', (0, 0), (-1, -1), 7),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
-        ]))
-        return t
+    # -------- 第 1 页：极简封面条 + 全流程总览 + SOP-01 --------
+    banner = Table(
+        [
+            [Paragraph("皮肤病理报告系统 · 快速入门操作手册", st["title"])],
+            [Paragraph("版本：v5.0 标准操作指南 (SOP)｜极简上手·一看就会·直接照做", st["subtitle"])],
+        ],
+        colWidths=[174 * mm],
+    )
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), NAVY),
+        ("TOPPADDING", (0, 0), (0, 0), 10),
+        ("BOTTOMPADDING", (0, 1), (0, 1), 10),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story.append(banner)
+    story.append(Spacer(1, 4 * mm))
 
-    def add_sop_block(sop_code, title, scope, steps_list, rule_note):
-        hdr = [[Paragraph(f"{sop_code}：{title}", s_tbl_hdr), Paragraph(f"适用范围：{scope}", s_tbl_hdr)]]
-        rows = list(hdr)
-        for idx, (step_name, detail) in enumerate(steps_list, 1):
-            rows.append([
-                Paragraph(f"<b>{idx}. {step_name}</b>", s_tbl_b),
-                Paragraph(detail, s_tbl)
-            ])
-        if rule_note:
-            rows.append([
-                Paragraph("<b>关键红线/核查点</b>", ParagraphStyle("RedL", fontName="YaHeiBold", fontSize=8.3, leading=12, textColor=colors.HexColor("#b91c1c"))),
-                Paragraph(rule_note, ParagraphStyle("RedR", fontName="YaHei", fontSize=8.3, leading=12.2, textColor=colors.HexColor("#991b1b")))
-            ])
+    story.append(Paragraph("本手册只讲三件事：<b>需要做什么</b>、<b>怎么做</b>、<b>不能做什么</b>。日常操作按下方 1→6 顺序执行即可。", st["body"]))
+    story.append(Spacer(1, 3 * mm))
+    story.append(Image(diag_workflow, width=174 * mm, height=39 * mm))
+    story.append(Spacer(1, 4 * mm))
 
-        tbl = Table(rows, colWidths=[125, W - 125])
-        ts = [
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1e3a8a")),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor("#f8fafc"), colors.HexColor("#ffffff")]),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 7),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 7),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ]
-        if rule_note:
-            ts.append(('BACKGROUND', (0, -1), (-1, -1), colors.HexColor("#fff1f2")))
-        tbl.setStyle(TableStyle(ts))
-        story.append(KeepTogether([tbl, Spacer(1, 8)]))
-
-    # Cover
-    story.append(Paragraph("皮肤病理报告系统", s_title))
-    story.append(Paragraph("快速入门与标准操作规程 (SOP) 手册 (v1.4 脱敏图文版)", s_subtitle))
-    story.append(Paragraph("【适用：报告医师 / 审核专家 / 病理技师 / 规培进修生】  |  【八模块全流程 · 独立免疫组化 · Word 单页打印】", s_badge))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#3b82f6"), spaceAfter=10))
-
-    story.append(make_callout(
-        "<b>★ 核心作业分工总览（必读）：</b> 本系统严格区分三类业务轨道——① <b>常规病例及仅标注“需免疫组化”的病例</b>：原初诊报告按普通流程在【报告制作】完成保存、打印与一键归档；② <b>标注“待审核”或“需重切”的病例</b>（二者完全等价）：仅复制病理照片到特殊待审目录，在【报告审核】协同修改，保存时双向同步两份草稿，审核完成后回【报告制作】归档；③ <b>免疫组化第二份报告</b>：在【免疫组化】模块基于已归档原报告创建独立副本，独立保存并归档为 <code>_免疫组化报告.docx</code>，与原报告并行不覆盖。"
-    ))
-    story.append(Spacer(1, 10))
-
-    # Overview Diagram
-    story.append(Paragraph("一、系统全流程标准作业蓝图 (SOP 总览)", s_h1))
-    story.append(Image(diag1, width=W, height=120))
-    story.append(Spacer(1, 8))
-    story.append(Image(diag2, width=W, height=167))
-    story.append(PageBreak())
-
-    # SOPs
-    story.append(Paragraph("二、各岗位标准操作规程 (SOP)", s_h1))
-
-    add_sop_block(
+    story.append(_sop_card(
+        st,
         "SOP-01",
-        "系统启停、初始化与环境适配",
-        "每日开闭系统及首次部署（Win10/Win11 一体包 & Win7 专版）",
-        [
-            ("启动服务", "双击根目录 <code>启动系统.bat</code>（或无黑框后台版 <code>.vbs</code>），等待浏览器自动打开 <code>http://127.0.0.1:8765</code>。Windows 7 用户请使用 Chrome 109 / Edge 109 / 360极速模式（禁止使用 IE 内核）。"),
-            ("确认免责声明", "每次进入 WebUI 需阅读执业复核免责提示，点击【我已知晓并同意】方可作业；点击【退出】将安全关闭后台服务。"),
-            ("首次目录初始化", "在向导中设定大容量磁盘路径作为“工作目录”（系统自动建 <code>已归档报告</code>、<code>未归档报告</code>、<code>特殊患者归档</code>、<code>领取表</code>、<code>数据库</code> 5 大主目录）及默认医生姓名（如演示值：张医生 / 李主任）。"),
-            ("安全关停", "工作结束后双击 <code>停止系统.bat</code>，释放本地 8765 端口并确保数据库事务提交。")
-        ],
-        "禁止直接强删运行中的 database/pathology.db；文档统一位于软件根目录 文档/ 下，请勿移动模板/与文字模板/目录。"
-    )
+        "日常开机启动、单图标进入与下班关机",
+        need_do="桌面仅保留一个图标启动或回到系统页面，避免黑框干扰或悄悄多开后台。",
+        how_to=(
+            "<b>1. 首次/再次进入：</b>直接双击桌面快捷方式「<b>启动系统(无黑框后台版).vbs</b>」，浏览器会自动弹出工作台。<br/>"
+            "<b>2. 关掉网页后再进：</b>不用找任务栏，再次双击同一个「.vbs」图标，系统检测到后台已在运行，会直接打开网页。<br/>"
+            "<b>3. 下班彻底退出：</b>点击网页右上角「<b>退出系统</b>」，或双击安装目录里的「<b>停止系统.bat</b>」。"
+        ),
+        do_not=(
+            "• <b>不要</b>把软件文件夹里的单独程序拖到桌面（请在「启动系统(无黑框后台版).vbs」上右键→发送到→桌面快捷方式）。<br/>"
+            "• <b>不要</b>在正在生成 Word 或批量打印时直接拔电源或用任务管理器强行结束进程。<br/>"
+            "• <b>不要</b>在首次配置向导时跳过工作目录设置，首次选好「工作目录」即可长期自动记住。"
+        ),
+    ))
 
-    add_sop_block(
+    story.append(Spacer(1, 4 * mm))
+    # 编号前缀速查小表
+    prefix_tbl = Table(
+        [
+            [Paragraph("<b>病理编号前缀速查（登记时按患者来源点选）</b>", ParagraphStyle("PH", fontName="YaHeiBold", fontSize=9.5, textColor=colors.white)), "", "", "", ""],
+            ["无前缀", "B 前缀", "L 前缀", "H 前缀", "T 前缀"],
+            ["常规门诊/住院患者", "本部院区患者", "分院区患者", "疑难病理会诊", "院外自带切片/外检"],
+        ],
+        colWidths=[34.8 * mm] * 5,
+    )
+    prefix_tbl.setStyle(TableStyle([
+        ("SPAN", (0, 0), (4, 0)),
+        ("BACKGROUND", (0, 0), (4, 0), BLUE),
+        ("BACKGROUND", (0, 1), (4, 1), LIGHT_BLUE),
+        ("FONTNAME", (0, 1), (-1, -1), "YaHei"),
+        ("FONTNAME", (0, 1), (4, 1), "YaHeiBold"),
+        ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 0.7, BLUE),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, BORDER_GRAY),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(prefix_tbl)
+
+    # -------- 第 2 页：SOP-02 患者录入 + 实景截图 1 --------
+    story.append(PageBreak())
+    story.append(_sop_card(
+        st,
         "SOP-02",
-        "患者信息登记建档与基本信息修改",
-        "【患者信息录入】工作区",
-        [
-            ("选择前缀与取号", "按标本来源选择前缀：无前缀（门诊）、<code>B</code>（病房）、<code>L</code>（分院区）、<code>H</code>（会诊）、<code>T</code>（特殊）。点击【自动编号】生成当日独立递增号（各前缀互不冲号）。"),
-            ("填写信息与部位", "录入姓名、性别、年龄（支持下拉 <code>岁/月/日</code> 或 <code>自由输入</code> 如 <code>1岁3月</code>）。<code>H/T</code> 前缀支持修改送检单位与科室（其余固定为 本院/皮肤科）。选定图片数（1-9）并在下方依次填写送检部位。"),
-            ("生成初稿与照片夹", "点击【保存并生成病理报告】，系统写入 <code>未归档报告\\病理报告录入\\病理号_姓名.docx</code> 并创建 <code>未归档报告\\病理照片\\病理号_姓名\\</code>。选中列表行可点【临床照片查询】打开 <code>未归档报告\\临床照片\\</code>。"),
-            ("已录信息修改与重归档", "修改已保存/已归档患者信息保存时，系统同步更新录入稿、照片夹、输出稿及特殊归档（待审核/重切/完成审核/免疫组化），并弹窗询问是否立即重新归档。")
-        ],
-        "修改患者基本信息时严禁系统直接覆写 已归档报告\\ 中的正式文件；点“否”延迟重归档则状态自动标记为 需要重新归档(2)。"
-    )
+        "登记新患者与创建病理照片文件夹（示例：张建国）",
+        need_do="为每位新患者生成不重复的当日病理号、Word 报告初稿，以及存放显微照片的专属文件夹。",
+        how_to=(
+            "<b>① 编号：</b>选好来源前缀（无 / B / L / H / T），点击【<b>自动编号</b>】。<br/>"
+            "<b>② 填表：</b>输入患者姓名（如：张建国）、性别、年龄（新生儿可填 3月 / 15天），点击图片数 <b>1~9</b> 并补全每张图对应的送检部位。<br/>"
+            "<b>③ 建档：</b>点绿色的【<b>保存并生成病理报告</b>】，右侧“今日列表”会立刻出现该患者，同时硬盘里自动建好照片文件夹。<br/>"
+            "<b>④ 对照：</b>选中右侧列表中的患者后点【<b>临床照片查询</b>】，可一键查看关联的皮肤科临床皮损照片。"
+        ),
+        do_not=(
+            "• <b>不要</b>自己硬编和别人一样的病理号——系统会提示重号并拦截。<br/>"
+            "• <b>不要</b>选了 4 张图却只填 2 个送检部位，部位框要和图片张数保持一致。<br/>"
+            "• <b>不要</b>手动改名或移动系统自动生成的患者文件夹，否则系统找不到报告。"
+        ),
+    ))
+    _add_screenshot(story, st, screenshots_dir, "shot1_entry.png", "附图 1：患者录入界面按钮引导（①自动编号 → ②填表选图数 → ③保存建档 → ④临床对照）", max_h_mm=128)
 
-    add_sop_block(
+    # -------- 第 3 页：SOP-03 报告制作 + 实景截图 2 --------
+    story.append(PageBreak())
+    story.append(_sop_card(
+        st,
         "SOP-03",
-        "常规病理报告与原初诊报告制作、归档及单页打印",
-        "【报告制作】工作区（普通患者 & 仅标注“需免疫组化”的原报告）",
-        [
-            ("显微摄片与命名", "显微镜拍摄后将图片存入 <code>未归档报告\\病理照片\\病理号_姓名\\</code>，推荐命名为 <code>1_诊断.jpg</code> / <code>1.2.诊断.jpg</code>。"),
-            ("图片排版与模板填入", "左侧按病理号正序选定患者；使用【临床照片查询】对照皮损照；点选图片插槽或【一键自动排版】，单图诊断默认去序号、多图保留序号；结合顶部推荐芯片或 249 篇词库弹窗写入镜下描述。"),
-            ("特殊标注勾选判断", "仅勾选 <b>[需免疫组化]</b> 时：<b>视同普通患者</b>处理初版原报告，保存时<b>不会</b>生成特殊归档目录；若需上级把关或切片复查，再勾选 <b>[待审核]</b> 或 <b>[需重切]</b>。"),
-            ("保存、归档与单页打印", "点击【保存报告并输出】写入 <code>未归档报告\\病理报告输出\\</code>；若未勾选待审核/重切，可直接点击【一键归档】平铺存入 <code>已归档报告\\病理号_姓名_诊断.docx</code>，并点【一键打印第一页】调用 Word COM 仅打第 1 页。")
-        ],
-        "Word/WPS 若正打开目标报告将被占锁保护安全拦截（HTTP 409），请先关闭对应 Word 窗口再保存或归档。"
-    )
+        "放显微照片、选用词条模板与「今日批量归档」",
+        need_do="把拍好的显微照片放进患者目录，选好词条模板与流转状态生成 Word 报告，确认后单人或批量归档。",
+        how_to=(
+            "<b>① 批量收尾：</b>切到「报告制作」页签；若当天常规/纯组化报告都已保存检查好，点右侧【<b>批量归档今日常规/纯组化</b>】一键收尾。<br/>"
+            "<b>② 放图核对：</b>平时制作单份病例时，先点蓝色【<b>打开/复制路径</b>】把显微图片放入文件夹（点【<b>临床照片查询</b>】可对照皮损）。<br/>"
+            "<b>③ 选图写诊断：</b>选好照片排版、套用常用词条模板（如有需要勾选“待审核 / 需重切 / 仅免疫组化”），点【<b>保存报告并输出</b>】生成 Word 并刷新预览。<br/>"
+            "<b>④ 归档/打一页：</b>常规或已审核通过病例点【<b>一键归档</b>】，需要打核对单可点右侧【<b>打印第一页</b>】。"
+        ),
+        do_not=(
+            "• <b>不要</b>开着电脑版 Word 占用同一份报告，同时又在网页里点“保存报告并输出”——会提示文件被占用，先关掉 Word 再操作。<br/>"
+            "• <b>不要</b>把显微图塞到无关目录或新建杂乱子文件夹里，请直接放在当前患者照片文件夹中。<br/>"
+            "• <b>不要</b>把还勾着“待审核 / 需重切”的疑难病例强行直接归档，先保存分流进审核队列。"
+        ),
+    ))
+    _add_screenshot(story, st, screenshots_dir, "shot2_making.png", "附图 2：报告制作工作区（①批量归档今日 → ②放照片核对 → ③选图词条保存输出 → ④一键归档/打印）", max_h_mm=124)
 
-    add_sop_block(
+    # -------- 第 4 页：SOP-04 报告审核 + 实景截图 3 --------
+    story.append(PageBreak())
+    story.append(_sop_card(
+        st,
         "SOP-04",
-        "待审核与重切病例质控审核规范（两者完全等价）",
-        "【报告制作】->【报告审核】-> 返回【报告制作】归档闭环",
-        [
-            ("触发分流（制作区保存）", "在制作区勾选 <code>待审核</code> 和/或 <code>需重切</code> 后保存：系统写入 <code>未归档报告\\病理报告输出\\</code>，并仅复制该报告草稿与 <code>病理照片\\</code> 到 <code>特殊患者归档\\待审核（或重切）\\&lt;患者目录&gt;\\</code>（<b>绝不复制临床照片</b>）。此时制作区禁止直接归档。"),
-            ("审核区照片调阅规则", "进入【报告审核】（不显示纯免疫组化患者）：点击【临床照片查询】打开 <code>未归档报告\\临床照片\\</code>；如需补充重切或复核照片，点击界面【病理照片目录】或【复制病理照片路径】获取<b>复制后目录</b>（<code>特殊患者归档\\待审核(或重切)\\...\\病理照片\\</code>），放图后点【重新读取照片】。"),
-            ("双草稿双向完全同步", "在审核区编辑报告医生、审核医生、报告日期、照片插槽、镜下所见或病理诊断后点击【保存修改并同步草稿】：新增照片自动回同步至 <code>未归档报告\\病理照片\\</code> 防止后续丢图，且同时同步更新 <code>未归档报告\\病理报告输出\\</code> 与 <code>特殊患者归档\\</code> 两份草稿（诊断更名时自动清理旧诊断文件/目录）。在制作区修改保存同样反向同步至特殊归档草稿。"),
-            ("完成审核与回制作区归档", "审核确认无误后点击【完成审核】。无论首次归档，还是对<b>已归档病例</b>在审核区保存修订（状态置为 <code>archived=2</code>，审核保存不直接改动已归档目录），均须切换到【报告制作】点击【一键归档】：系统正式更新 <code>已归档报告\\</code>，并将待审目录移入 <code>特殊患者归档\\完成审核\\</code>。")
-        ],
-        "审核区保存绝不直接改写 已归档报告\\！已归档病例经审核修订后必须回到【报告制作】执行重新归档，方可对外打印新版报告。"
-    )
+        "报告审核队列、重切补图与双草稿同步",
+        need_do="集中处理待审核或需重切的特殊病例，放好重切照片、修改确认后再回常规流完成归档。",
+        how_to=(
+            "<b>① 放重切图：</b>进入「报告审核」页签，选中左侧待审患者，把重切照片放入特殊归档照片夹，点【<b>重新读取照片</b>】。<br/>"
+            "<b>② 改稿同步：</b>修改医生/日期/诊断后点【<b>保存同步草稿</b>】（此时不会误改已归档正式库，系统自动维护双草稿一致）。<br/>"
+            "<b>③ 边存边打：</b>需要打纸质第 1 页核对单请医生/主任（如李主任）签核时，点【<b>一键打印第一页</b>】。<br/>"
+            "<b>④ 审核放行：</b>核对无误后点绿色【<b>完成审核</b>】，再切回「报告制作」点击一键归档即可进入报告输出。"
+        ),
+        do_not=(
+            "• <b>不要</b>在电脑文件夹窗口里手动 Delete 删掉待审核患者目录，任何退回/作废均走网页按钮。<br/>"
+            "• <b>不要</b>忘记点【完成审核】就去报告输出里找，必须经过“完成审核”才可最终归档。<br/>"
+            "• <b>不要</b>在外部 Word 未保存关闭时点击网页归档移动文件，外改润色后先关闭 Word 再回网页保存/归档。"
+        ),
+    ))
+    _add_screenshot(story, st, screenshots_dir, "shot3_review.png", "附图 3：报告审核工作区（①重切取图 → ②保存同步草稿 → ③打印第一页 → ④完成审核）", max_h_mm=124)
 
-    add_sop_block(
+    # -------- 第 5 页：SOP-05 独立免疫组化 + 实景截图 4 --------
+    story.append(PageBreak())
+    story.append(_sop_card(
+        st,
         "SOP-05",
-        "独立免疫组化报告创建与归档",
-        "【免疫组化】工作区（同一患者的第二份独立报告）",
-        [
-            ("前置条件核验", "确保患者的第一份原初诊报告已完成【已归档报告】归档（若原报告兼有待审核/重切，须先走完 SOP-04 完成归档）。原报告未归档时点击创建将被系统拦截提示。"),
-            ("创建免疫组化报告", "在【免疫组化】列表选中患者，点击【创建免疫组化报告】：系统从 <code>已归档报告\\</code> 复制原报告与 <code>未归档报告\\病理照片\\</code> 到 <code>工作目录\\特殊患者归档\\免疫组化\\&lt;原归档名&gt;\\</code>（<b>不复制临床照片</b>）。"),
-            ("独立编辑与组化照片录入", "点击【打开组化照片目录】或【复制组化照片路径】放入免疫组化染色新照片，点击【重新读取照片】刷新；独立修改报告/审核医生、日期、镜下所见（支持词库弹窗与推荐）与诊断（临床照片查询仍打开 <code>未归档报告\\临床照片\\</code>）。"),
-            ("独立保存与独立归档", "点击【保存免疫组化报告】仅修改 <code>特殊患者归档\\免疫组化\\</code> 内草稿与 <code>ihc_reports</code> 表，<b>完全不动原报告（未归档与已归档原件均不动）</b>；点击【归档免疫组化报告】仅把 Word 复制到 <code>已归档报告\\&lt;原文件名&gt;_免疫组化报告.docx</code>（不覆写原报告，且<b>不移动</b> <code>特殊患者归档\\免疫组化\\</code> 目录，不放入 <code>完成审核\\</code>）。")
-        ],
-        "原报告与免疫组化报告在逻辑和文件上完全视作两份报告！如已归档的组化报告再次修改保存，须在【免疫组化】页重新点击【归档】更新 *_免疫组化报告.docx。"
-    )
+        "同一患者加做「免疫组化」独立第二份报告",
+        need_do="在保留已归档常规病理报告原件不变的前提下，为加做免疫组化的患者独立生成第二份「*_免疫组化报告」。",
+        how_to=(
+            "<b>① 建组化副本：</b>切到「免疫组化」页签，搜索选中原报告已归档的患者，点【<b>创建/重建组化报告</b>】复制出独立工作副本。<br/>"
+            "<b>② 放染色照片：</b>点【<b>打开/复制照片路径</b>】放入免疫组化显微图，可同时点【<b>临床照片查询</b>】对照。<br/>"
+            "<b>③ 独立存与归档：</b>录入染色结果后先点【<b>保存</b>】，预览无误再点【<b>归档</b>】，输出独立「*_免疫组化报告」文件。<br/>"
+            "<b>④ 误标作废：</b>如不再加做或建错，点红色【<b>删除免疫组化报告</b>】安全清理，绝不损伤原常规报告。"
+        ),
+        do_not=(
+            "• <b>不要</b>直接去修改已归档的原常规病理 Word 冒充免疫组化报告，必须走独立「免疫组化」页签。<br/>"
+            "• <b>不要</b>手改「*_免疫组化报告」的文件名后缀，避免「报告输出」右栏识别不到。<br/>"
+            "• <b>不要</b>混淆删除按钮：此处的删除仅清组化第二份报告，不会删除常规原报告。"
+        ),
+    ))
+    _add_screenshot(story, st, screenshots_dir, "shot4_ihc.png", "附图 4：独立免疫组化工作区（①建工作副本 → ②放染色照片 → ③保存并归档 → ④安全删除不伤原件）", max_h_mm=124)
 
-    add_sop_block(
+    # -------- 第 6 页：SOP-06 报告输出、签名单与综合查询 + 实景截图 5 --------
+    story.append(PageBreak())
+    story.append(_sop_card(
+        st,
         "SOP-06",
-        "报告输出三列表、签名单与查询",
-        "【报告输出】、【报告领取签名单】与【病历综合查询】",
+        "报告三栏批量打印、领取签名单与病历综合查询",
+        need_do="分类批量打印已归档报告、导出 Word/Excel 双版本领取签名单，以及随时反查历史报告并补改。",
+        how_to=(
+            "<b>①②③ 三栏分批打印：</b>进入「报告输出」页签，左栏【常规已归档】、中栏【特殊审核完成】、右栏【免疫组化已归档】相互独立，支持各自一键【<b>批量打印</b>】或【<b>撤销归档/审核</b>】。<br/>"
+            "<b>④ 精准日期过滤：</b>三栏顶部均支持切换“报告日期 / 送检日期”、时间范围及多前缀复选过滤。<br/>"
+            "<b>⑤ 导签名单：</b>切到顶部「<b>报告签名单</b>」页签，一键生成 Word 版和 Excel 版患者报告领取签名单。<br/>"
+            "<b>⑥ 查历史补改：</b>切到「<b>病历综合查询</b>」页签，可按姓名、病理号、医生或<b>报告日期</b>反查全库，未归档老记录也可直接打开继续编辑。"
+        ),
+        do_not=(
+            "• <b>不要</b>连续狂点【批量打印】，点一次后等待默认打印机依次出纸即可。<br/>"
+            "• <b>不要</b>打印前忘记检查电脑默认打印机是否联机、纸盒是否有纸。<br/>"
+            "• <b>不要</b>手拖 Word 底部医生签名栏前面的空格，系统已用精确定位保证单行右对齐、不折行。"
+        ),
+    ))
+    _add_screenshot(story, st, screenshots_dir, "shot5_output.png", "附图 5：报告输出三列表（左栏常规 / 中栏特殊审核 / 右栏独立免疫组化，支持日期及前缀多选）", max_h_mm=104)
+
+    # -------- 第 7 页：1-9 图排版图 + 常见问题 10 秒自查表 --------
+    story.append(PageBreak())
+    story.append(Paragraph("附表 1：图文自动排版规则（1~9 张图均无需手工调格）", st["h1"]))
+    story.append(Image(diag_layout, width=174 * mm, height=37 * mm))
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(Paragraph("附表 2：常见操作问题 10 秒自查表", st["h1"]))
+    faq_rows = [
         [
-            ("三列表精准分发打印", "【报告输出】三栏并排隔离：① <b>常规已归档</b>（含普通患者与仅需免疫组化的原报告）；② <b>特殊审核完成</b>（待审/重切完成审核）；③ <b>免疫组化已归档</b>（<code>*_免疫组化报告.docx</code>）。支持按报告/送检日期和前缀过滤、单独或批量调用 Word COM 仅打第 1 页。"),
-            ("独立撤销归档 / 撤销审核", "列表 1/2 撤销仅回退原报告归档或审核队列（<b>绝不误删</b> <code>*_免疫组化报告.docx</code> 与 <code>特殊患者归档\\免疫组化\\</code>）；列表 3 撤销仅移出 <code>*_免疫组化报告.docx</code>（保留原报告和组化草稿目录）。"),
-            ("生成与打印签名单", "在【报告领取签名单】按送检/报告日期区间与多前缀生成 Excel + 无空行 Word 签名单至 <code>领取表\\</code>（Word 自动标注前一工作日参考手术日期），点击打印直接调用 Word 输出。"),
-            ("综合查询与安全删除", "在【病历综合查询】按状态/日期组合查件，点【定位】可直达原报告及独立组化副本路径；删除病例统一通过 Windows 回收站软删除，保障数据可追溯恢复。")
+            Paragraph("<b>遇到什么情况</b>", ParagraphStyle("FH", fontName="YaHeiBold", fontSize=9.5, textColor=colors.white)),
+            Paragraph("<b>原因说明（极简版）</b>", ParagraphStyle("FH", fontName="YaHeiBold", fontSize=9.5, textColor=colors.white)),
+            Paragraph("<b>立刻怎么做</b>", ParagraphStyle("FH", fontName="YaHeiBold", fontSize=9.5, textColor=colors.white)),
         ],
-        "所有打印操作均强制经 Word/WPS COM 引擎执行单页硬件控制；切勿使用浏览器打印替代 Word 排版打印。"
+        [
+            "关掉浏览器后想再进系统，双击图标没反应或怕多开",
+            "后台服务本来就还开着，不会多开新窗口",
+            "直接再双击一次桌面「启动系统(无黑框后台版).vbs」，网页会自动弹出来",
+        ],
+        [
+            "点生成或归档提示“文件被占用 / 无法保存”",
+            "您用电脑版 Word 打开了这份报告还没关",
+            "把任务栏里对应的 Word 窗口保存并关闭，回网页再点一次按钮即可",
+        ],
+        [
+            "想给某位患者补改几天前已经归档的报告",
+            "报告已进入历史归档库",
+            "去「病历综合查询」搜姓名/病理号/日期找到他，点编辑或撤销归档后再修改",
+        ],
+        [
+            "打印出来的报告最后签名跑到了第 2 页",
+            "文字行数偏多或手改了多余空行",
+            "删掉报告里自己多敲的空行后在网页点保存重生成（勿手拉空格）",
+        ],
+        [
+            "点打印没反应或报错（尤其旧系统/老 Word）",
+            "默认打印机未设好，或正在弹窗确认",
+            "进控制面板确认默认打印机在线有纸；使用软件前确保 Word 未卡在弹窗状态",
+        ],
+        [
+            "软件异常想彻底重启刷新",
+            "后台服务需要冷重启一次",
+            "双击软件目录内的「停止系统.bat」，等 2 秒后再双击桌面「.vbs」启动",
+        ],
+    ]
+    p_rows = []
+    for i, r in enumerate(faq_rows):
+        if i == 0:
+            p_rows.append(r)
+        else:
+            p_rows.append([Paragraph(c, st["sop_cell"]) for c in r])
+
+    faq_tbl = Table(p_rows, colWidths=[50 * mm, 52 * mm, 72 * mm])
+    faq_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ROW_ALT]),
+        ("BOX", (0, 0), (-1, -1), 0.8, NAVY),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, BORDER_GRAY),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(faq_tbl)
+
+    story.append(Spacer(1, 6 * mm))
+    tip_box = Table(
+        [[Paragraph(
+            "<b>日常口诀（贴在工位旁）：</b><br/>"
+            "上班双击 .vbs 一图标直接进 → 编号建档放照片 → 选词条预览没问题就归档 → "
+            "需重切进「报告审核」→ 加做组化走独立页签 → 批量打印配签名单 → 下班点退出或「停止系统.bat」。",
+            ParagraphStyle("Tip", fontName="YaHei", fontSize=9.5, leading=14.5, textColor=NAVY, wordWrap="CJK"),
+        )]],
+        colWidths=[174 * mm],
     )
-
-    # Layout Control Section
-    story.append(KeepTogether([
-        Paragraph("三、排版控制与“单页打印保护”规范", s_h1),
-        Paragraph("为防止第二页临床病史被打印浪费耗材，引擎锁定 15 磅固定行距并按图片数量自动调节建议行数，确保第一页严丝合缝止步于医生签名栏：", s_body),
-        Image(diag3, width=W, height=134),
-        Spacer(1, 8),
+    tip_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT_AMBER),
+        ("BOX", (0, 0), (-1, -1), 0.9, AMBER),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
     ]))
+    story.append(tip_box)
 
-    layout_table_data = [
-        [Paragraph("图片规格", s_tbl_hdr), Paragraph("图片布局", s_tbl_hdr), Paragraph("镜下描述可用行数", s_tbl_hdr), Paragraph("病理诊断可用行数", s_tbl_hdr), Paragraph("第一页收尾位置", s_tbl_hdr)],
-        [Paragraph("1 张图 (单图)", s_tbl), Paragraph("居中大图 (1行)", s_tbl), Paragraph("15 行 (含标题)", s_tbl), Paragraph("10 行 (含标题)", s_tbl), Paragraph("精确收于报告日期", s_tbl)],
-        [Paragraph("2 张图 (双图)", s_tbl), Paragraph("左右并排 (1行)", s_tbl), Paragraph("14 行 (含标题)", s_tbl), Paragraph("10 行 (含标题)", s_tbl), Paragraph("精确收于报告日期", s_tbl)],
-        [Paragraph("3 张图 (三图)", s_tbl), Paragraph("单行三图紧凑", s_tbl), Paragraph("15 行 (含标题)", s_tbl), Paragraph("10 行 (含标题)", s_tbl), Paragraph("精确收于报告日期", s_tbl)],
-        [Paragraph("4 - 6 张图", s_tbl), Paragraph("双行阵列 (2行)", s_tbl), Paragraph("10 行 (含标题)", s_tbl), Paragraph("6 行 (含标题)", s_tbl), Paragraph("压缩空行，首页保全", s_tbl)],
-        [Paragraph("7 - 9 张图", s_tbl), Paragraph("九宫阵列 (3行)", s_tbl), Paragraph("5 行 (含标题)", s_tbl), Paragraph("3 行 (含标题)", s_tbl), Paragraph("极度紧凑，绝不超页", s_tbl)]
-    ]
-    lt_flow = Table(layout_table_data, colWidths=[90, 95, 108, 108, 94])
-    lt_flow.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1e3a8a")),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor("#f8fafc"), colors.HexColor("#ffffff")]),
-        ('TOPPADDING', (0, 0), (-1, -1), 5),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    story.append(lt_flow)
-
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("四、常见问题与排错指南 (FAQ)", s_h1))
-
-    faq_items = [
-        ("Q1：为什么“待审核”列表里看不到仅勾选了“需免疫组化”的患者？",
-         "答：新版将免疫组化拆分为独立模块（顶部【免疫组化】标签）。仅勾选“需免疫组化”的患者先按常规流程在【报告制作】归档和打印原初诊报告，再进入【免疫组化】创建第二份组化报告；只有勾选了“待审核”或“需重切”的患者才进入【报告审核】。"),
-        ("Q2：在【免疫组化】点击“创建免疫组化报告”提示原报告尚未归档怎么办？",
-         "答：免疫组化报告必须在患者原报告已归档于 <code>已归档报告\\</code> 后方可创建副本。请先在【报告制作】（或完成待审后回【报告制作】）将原报告点【一键归档】，然后再创建免疫组化报告。"),
-        ("Q3：我在【报告审核】里新放入了重切/复核病理照片，为什么【报告制作】还能同步看到、归档不会丢图？",
-         "答：审核区的打开/复制病理照片按钮指向复制后的 <code>特殊患者归档\\待审核(或重切)\\...\\病理照片\\</code>；在审核区点【保存修改并同步草稿】时，系统会自动将新增照片回同步至 <code>未归档报告\\病理照片\\</code>，并保持两处 Word 草稿完全一致。"),
-        ("Q4：为什么已归档的报告在【报告审核】改完保存后，还要求去【报告制作】重新归档？",
-         "答：为防止静默篡改已封存档案，审核保存仅同步两份草稿并将归档状态标为 <code>需重新归档(2)</code>，不直接覆写 <code>已归档报告\\</code>；需前往【报告制作】核验后点【一键归档】正式更新归档文件。"),
-        ("Q5：点击“临床照片查询”提示找不到或存在重名怎么办？",
-         "答：待审核/免疫组化均不复制临床照片。系统直接在 <code>未归档报告\\临床照片\\</code> 中检索，单匹配自动打开，重名或未命中则打开母目录由操作员人工确认。"),
-    ]
-    for q, a in faq_items:
-        story.append(KeepTogether([
-            Paragraph(f"<b>{q}</b>", s_bold),
-            Paragraph(a, s_body),
-            Spacer(1, 3)
-        ]))
-
-    story.append(Spacer(1, 12))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#e2e8f0"), spaceAfter=8))
-
-    footer_table = Table([[
-        Paragraph("<b>编制单位：</b> 皮肤病理系统研发团队<br/><b>部署支持：</b> 离线绿包 / Win7 专版", s_tbl),
-        Paragraph("<b>培训脱敏声明：</b><br/>本文档内人名（张医生、李主任、张建国等）及号段均系脱敏教学示例，无真实机构或个人隐私。", s_tbl),
-        Paragraph("<b>版本标识：</b> v1.4.0-SOP<br/><b>文档归档：</b> <code>文档/</code>", s_tbl)
-    ]], colWidths=[150, 220, 125])
-    footer_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
-        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor("#cbd5e1")),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-    ]))
-    story.append(footer_table)
-
-    doc.build(story, canvasmaker=NumberedCanvas)
-    print(f"[OK] PDF 生成成功: {pdf_path}")
-
-    try:
-        for f in [diag1, diag2, diag3]:
-            if os.path.exists(f):
+    doc.build(story, onFirstPage=_page_footer, onLaterPages=_page_footer)
+    # 清理临时示意图
+    for f in (diag_workflow, diag_layout):
+        if os.path.exists(f):
+            try:
                 os.remove(f)
-        if os.path.exists(img_dir):
-            os.rmdir(img_dir)
-    except Exception as e:
-        print(f"清理临时图片提示: {e}")
+            except OSError:
+                pass
+    try:
+        os.rmdir(img_dir)
+    except OSError:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="生成皮肤病理报告系统快速入门操作手册 PDF")
+    parser.add_argument(
+        "--output",
+        default=os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "文档",
+            "皮肤病理报告系统_快速入门操作手册.pdf",
+        ),
+        help="输出 PDF 路径",
+    )
+    parser.add_argument(
+        "--screenshots-dir",
+        default=None,
+        help="可选：脱敏标注截图所在目录（包含 shot1_entry.png ~ shot5_output.png）",
+    )
+    args = parser.parse_args()
+    build_manual_pdf(args.output, screenshots_dir=args.screenshots_dir)
+    print(f"[OK] Generated SOP Manual PDF: {args.output}")
 
 
 if __name__ == "__main__":
-    target_pdf = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "文档",
-        "皮肤病理报告系统_快速入门操作手册.pdf"
-    )
-    build_manual_pdf(target_pdf)
+    main()

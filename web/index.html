@@ -355,7 +355,13 @@
             </div>
 
             <!-- Scrollable list of patients -->
-            <div class="patient-list-container" id="making-patient-list" style="flex: 1; max-height: calc(100vh - 280px);">
+            <div class="making-batch-actions">
+              <button type="button" class="btn btn-success btn-sm" id="btn-making-batch-archive-today" style="width: 100%; font-weight: 600;">
+                📦 一键归档今日已保存未归档报告
+              </button>
+            </div>
+
+            <div class="patient-list-container" id="making-patient-list" style="flex: 1; min-height: 0;">
               <div class="patient-list-empty">正在加载报告列表...</div>
             </div>
           </div>
@@ -390,8 +396,11 @@
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-open-photo-dir">
                   📂 病理照片目录
                 </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-copy-photo-path">
+                  📋 复制病理照片路径
+                </button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-mk-open-word-file">
-                  📄 原Word文件
+                  📄 空白报告模板
                 </button>
               </div>
             </div>
@@ -612,8 +621,6 @@
               <div id="rev-photo-path-box" class="ihc-photo-path-bar" style="display: none;">
                 <span style="font-size: 12px; font-weight: 600; color: #475569; white-space: nowrap;">📁 审核病理照片目录:</span>
                 <div class="path-text" id="rev-photo-path-text" title="">-</div>
-                <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-open-photo-dir-2" style="white-space: nowrap;">📂 打开目录</button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btn-rev-copy-photo-path-2" style="white-space: nowrap;">📋 复制路径</button>
               </div>
               
               <!-- Reviewer Doctor Override Row (Special in Review) -->
@@ -692,6 +699,9 @@
                 </button>
                 <button type="button" class="btn btn-secondary" id="btn-rev-open-word">
                   📄 在Word中打开
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-rev-print-report" style="color: #0369a1; border-color: #bae6fd; background: #f0f9ff;">
+                  🖨️ 一键打印第一页
                 </button>
                 <button type="button" class="btn btn-primary" id="btn-rev-save-overwrite">
                   💾 保存修改并同步草稿
@@ -772,17 +782,20 @@
                 <span class="banner-diag" id="ihc-badge-diag">诊断</span>
               </div>
               <div class="making-banner-actions" style="flex-wrap: wrap;">
+                <button type="button" class="btn btn-danger btn-sm" id="btn-ihc-delete">
+                  🗑️ 删除免疫组化报告
+                </button>
                 <button type="button" class="btn btn-primary btn-sm" id="btn-ihc-create">
                   🧪 创建免疫组化报告
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-find-clinical">
+                  📷 临床照片查询
                 </button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-open-photo-dir">
                   📂 打开组化照片目录
                 </button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-copy-photo-path">
                   📋 复制组化照片路径
-                </button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-find-clinical">
-                  📷 临床照片查询
                 </button>
               </div>
             </div>
@@ -806,8 +819,6 @@
               <div id="ihc-photo-path-box" class="ihc-photo-path-bar" style="display: none;">
                 <span style="font-size: 12px; font-weight: 600; color: #475569; white-space: nowrap;">📁 免疫组化照片目录:</span>
                 <div class="path-text" id="ihc-photo-path-text" title="">-</div>
-                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-open-photo-dir-2" style="white-space: nowrap;">📂 打开目录</button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btn-ihc-copy-photo-path-2" style="white-space: nowrap;">📋 复制路径</button>
               </div>
 
               <!-- Doctor & Report Date Override -->
@@ -1252,7 +1263,27 @@
         </div>
         <div class="card-body">
           <form id="search-form">
-            <!-- Row 1: Date Range & Quick Buttons -->
+            <!-- Row 1: Date Ranges & Quick Buttons -->
+            <div class="search-filter-row" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border-color);">
+              <div class="form-group" style="min-width: 150px;">
+                <label class="form-label">报告日期 (起始)</label>
+                <input type="date" id="search-report-start-date" class="form-control">
+              </div>
+              <div class="form-group" style="min-width: 150px;">
+                <label class="form-label">报告日期 (结束)</label>
+                <input type="date" id="search-report-end-date" class="form-control">
+              </div>
+              <div class="form-group" style="margin-bottom: 2px;">
+                <label class="form-label" style="visibility: hidden;">快捷</label>
+                <div class="date-quick-btns" style="display: flex; gap: 6px;">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-report-today">今日</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-report-week">本周</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-report-month">本月</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-search-report-all">全部时间</button>
+                </div>
+              </div>
+            </div>
+
             <div class="search-filter-row" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--border-color);">
               <div class="form-group" style="min-width: 150px;">
                 <label class="form-label">送检日期 (起始)</label>
@@ -1396,7 +1427,7 @@
               <div class="section-label">📁 工作目录 (核心数据存储路径)</div>
               <div class="form-group">
                 <label class="form-label" for="setting-work-dir">工作目录路径</label>
-                <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\DermatologySystem\工作目录">
+                <input type="text" id="setting-work-dir" class="form-control" placeholder="D:\AIagent\project\dermatology-system\工作目录">
                 <small style="color: var(--text-muted); margin-top: 4px;">
                   系统将按照“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”、“领取表”标准结构自动维护文件。
                 </small>
@@ -1437,7 +1468,7 @@
       <form id="wizard-form">
         <div class="form-group" style="margin-bottom: 14px;">
           <label class="form-label required" for="wizard-work-dir">工作目录位置</label>
-          <input type="text" id="wizard-work-dir" class="form-control" value="D:\DermatologySystem\工作目录" required>
+          <input type="text" id="wizard-work-dir" class="form-control" value="D:\AIagent\project\dermatology-system\工作目录" required>
           <small style="color: var(--text-muted); margin-top: 4px;">
             系统将自动在此目录下建立“未归档报告”、“已归档报告”、“特殊患者归档”、“数据库”等标准文件夹。
           </small>
