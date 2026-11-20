@@ -20,6 +20,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
+from app.path_manager import backup_before_overwrite
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "模板")
@@ -559,13 +560,7 @@ def generate_report_file(templates_dir, output_path, data):
         os.makedirs(dir_p, exist_ok=True)
 
     if os.path.exists(output_path):
-        try:
-            with open(output_path, "a+b"):
-                pass
-        except (PermissionError, IOError) as pe:
-            raise PermissionError(
-                f"报告文件被其他软件（如 Word 或 WPS）打开占用，无法写入！请先关闭该文件后重试保存。路径: {os.path.basename(output_path)}"
-            ) from pe
+        backup_before_overwrite(output_path, lock_label="报告文件")
 
     try:
         doc.save(output_path)
@@ -580,3 +575,259 @@ def update_report_file(templates_dir, doc_path, data):
     Update report file. Uses generate_report_file to ensure layout consistency.
     """
     return generate_report_file(templates_dir, doc_path, data)
+
+
+def _set_paragraph_text_preserving_style(p_obj, new_text, default_font="宋体", default_size_pt=12):
+    """Replace visible text of a paragraph while keeping existing run styling and non-text XML nodes (e.g. comments)."""
+    runs = p_obj.runs
+    if runs:
+        runs[0].text = new_text
+        for extra_r in runs[1:]:
+            extra_r.text = ""
+    else:
+        r = p_obj.add_run(new_text)
+        set_run_font(r, default_font, default_size_pt)
+
+
+def _normalize_biopsy_sites_list(raw_sites):
+    if isinstance(raw_sites, str):
+        return [s.strip() for s in raw_sites.split(";") if s.strip()]
+    if isinstance(raw_sites, list):
+        return [str(s).strip() for s in raw_sites if str(s).strip()]
+    return []
+
+
+def _extract_existing_section_style(paras):
+    """Capture representative font style from the first non-empty content paragraph in a section."""
+    for p in paras:
+        if p.runs:
+            r0 = p.runs[0]
+            return {
+                "name": r0.font.name or "宋体",
+                "size": r0.font.size or Pt(12),
+                "bold": r0.bold,
+                "italic": r0.italic,
+                "color": r0.font.color.rgb if (r0.font.color and r0.font.color.rgb) else None,
+            }
+    return None
+
+
+def _apply_captured_run_style(run, style_info):
+    if not style_info:
+        set_run_font(run, "宋体", 12)
+        return
+    run.font.name = style_info["name"]
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), style_info["name"])
+    run.font.size = style_info["size"]
+    if style_info["bold"] is not None:
+        run.bold = style_info["bold"]
+    if style_info["italic"] is not None:
+        run.italic = style_info["italic"]
+    if style_info["color"] is not None:
+        run.font.color.rgb = style_info["color"]
+
+
+def _replace_section_paragraphs_in_place(doc, header_p, next_header_p, lines, target_total_lines):
+    """
+    Replace section content lines between header_p and next_header_p while preserving
+    existing paragraph formatting, run fonts/colors, and avoiding full template redraw.
+    """
+    section_ps = []
+    started = False
+    for p in list(doc.paragraphs):
+        if p._p == header_p._p:
+            started = True
+            continue
+        if started:
+            if next_header_p is not None and p._p == next_header_p._p:
+                break
+            section_ps.append(p)
+
+    style_info = _extract_existing_section_style([p for p in section_ps if p.text.strip()] + [header_p])
+    non_empty_lines = [l.strip() for l in (lines or []) if str(l).strip()]
+    visual_lines = sum(count_visual_lines(l) for l in non_empty_lines)
+    pad_needed = max(0, target_total_lines - (1 + visual_lines))
+    desired_texts = non_empty_lines + [""] * pad_needed
+
+    # Update existing paragraphs in place first, then append/remove minimal delta before next_header_p
+    for idx, txt in enumerate(desired_texts):
+        if idx < len(section_ps):
+            _set_paragraph_text_preserving_style(section_ps[idx], txt)
+        else:
+            new_p = doc.add_paragraph()
+            next_header_p._p.addprevious(new_p._p)
+            pf = new_p.paragraph_format
+            pf.space_before = Pt(0)
+            pf.space_after = Pt(0)
+            pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+            pf.line_spacing = Pt(15)
+            if txt:
+                r = new_p.add_run(txt)
+                _apply_captured_run_style(r, style_info)
+
+    for extra_p in section_ps[len(desired_texts):]:
+        has_media = bool(
+            extra_p._p.findall(".//" + qn("w:drawing"))
+            or extra_p._p.findall(".//" + qn("w:pict"))
+            or extra_p._p.findall(".//" + qn("w:commentRangeStart"))
+        )
+        if has_media:
+            _set_paragraph_text_preserving_style(extra_p, "")
+        else:
+            parent = extra_p._p.getparent()
+            if parent is not None:
+                parent.remove(extra_p._p)
+
+
+def update_docx_preserving_styles(
+    doc_path,
+    data,
+    update_demographics=True,
+    update_report_text=False,
+    update_sites=True,
+    update_signature=False,
+):
+    """
+    Update specific text fields of an existing .docx in-place via python-docx without rebuilding
+    from blank template, preserving external Word fonts, bolding, line spacing, and comments.
+    Always calls backup_before_overwrite() before saving.
+    """
+    if not doc_path or not os.path.exists(doc_path):
+        raise FileNotFoundError(f"未找到待更新的 Word 文件: {doc_path}")
+
+    doc = docx.Document(doc_path)
+    if not doc.tables:
+        raise ValueError(f"Word 文档缺少基本信息表格，无法就地更新: {doc_path}")
+
+    table0 = doc.tables[0]
+    age_val = str(data.get("age", "")).strip()
+    if age_val and not age_val.endswith(("岁", "月", "日", "天")):
+        age_val += "岁"
+
+    biopsy_sites = _normalize_biopsy_sites_list(data.get("biopsy_sites", []))
+    image_count = int(data.get("image_count") or 1)
+
+    if update_demographics:
+        label_values = {
+            "姓名": str(data.get("name", "") or "").strip(),
+            "性别": str(data.get("gender", "") or "").strip(),
+            "年龄": age_val,
+            "病理号": str(data.get("pathology_no", "") or "").strip(),
+            "送检单位": str(data.get("send_unit") or "本院").strip() or "本院",
+            "科室": str(data.get("department") or "皮肤科").strip() or "皮肤科",
+            "送检日期": str(data.get("submission_date", "") or "").strip(),
+            "住院号": str(data.get("inpatient_no", "") or "").strip(),
+            "门诊号": str(data.get("outpatient_no", "") or "").strip(),
+            "送检医生": str(data.get("referring_doctor", "") or "").strip(),
+            "临床诊断": str(data.get("clinical_diagnosis", "") or "").strip(),
+        }
+        if update_sites and image_count == 1:
+            label_values["送检部位"] = biopsy_sites[0] if biopsy_sites else ""
+
+        seen_tc = set()
+        for row in table0.rows:
+            for cell in row.cells:
+                tc = cell._tc
+                if tc in seen_tc:
+                    continue
+                seen_tc.add(tc)
+                raw_txt = cell.text.strip()
+                m = re.match(r"^([^：:]+?)[：:]", raw_txt)
+                if not m:
+                    continue
+                lbl = m.group(1).strip()
+                if lbl in label_values and cell.paragraphs:
+                    _set_paragraph_text_preserving_style(cell.paragraphs[0], f"{lbl}：{label_values[lbl]}")
+                    for extra_p in list(cell.paragraphs)[1:]:
+                        parent = extra_p._p.getparent()
+                        if parent is not None:
+                            parent.remove(extra_p._p)
+
+    if update_sites and len(doc.tables) >= 2:
+        seen_tc = set()
+        for tbl in doc.tables[1:]:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    tc = cell._tc
+                    if tc in seen_tc:
+                        continue
+                    seen_tc.add(tc)
+                    m_site = re.match(r"^(\d+)\s*[.、．]", cell.text.strip())
+                    if m_site:
+                        idx = int(m_site.group(1))
+                        if 1 <= idx <= image_count and cell.paragraphs:
+                            s_name = biopsy_sites[idx - 1] if len(biopsy_sites) >= idx else ""
+                            label_str = f"{idx}. {s_name}" if s_name else f"{idx}."
+                            _set_paragraph_text_preserving_style(cell.paragraphs[0], label_str, default_size_pt=11)
+
+    p_micro = p_diag = p_sig = p_hist = None
+    for p in doc.paragraphs:
+        t = p.text.strip()
+        if (t.startswith("镜下描述：") or t.startswith("镜下描述:")) and p_micro is None:
+            p_micro = p
+        elif (t.startswith("病理诊断：") or t.startswith("病理诊断:")) and p_diag is None:
+            p_diag = p
+        elif ("报告医生：" in t or "报告医生:" in t) and "审核医生" in t and p_sig is None:
+            p_sig = p
+        elif (t.startswith("病史：") or t.startswith("病史:")) and p_hist is None:
+            p_hist = p
+
+    if update_demographics and p_hist is not None:
+        med_hist = str(data.get("medical_history", "") or "").strip()
+        _set_paragraph_text_preserving_style(p_hist, f"病史：{med_hist}")
+        # Clean extra plain paragraphs below history header if doctor only had plain trailing lines
+        found_hist = False
+        for p in list(doc.paragraphs):
+            if p._p == p_hist._p:
+                found_hist = True
+                continue
+            if found_hist:
+                has_media = bool(
+                    p._p.findall(".//" + qn("w:drawing"))
+                    or p._p.findall(".//" + qn("w:pict"))
+                    or p._p.findall(".//" + qn("w:commentRangeStart"))
+                )
+                if not has_media:
+                    parent = p._p.getparent()
+                    if parent is not None:
+                        parent.remove(p._p)
+
+    if update_report_text:
+        if image_count == 1:
+            t_micro, t_diag = 15, 10
+        elif image_count == 2:
+            t_micro, t_diag = 14, 10
+        elif image_count == 3:
+            t_micro, t_diag = 15, 10
+        elif image_count <= 6:
+            t_micro, t_diag = 10, 6
+        else:
+            t_micro, t_diag = 5, 3
+
+        if p_micro is not None and p_diag is not None:
+            _set_paragraph_text_preserving_style(p_micro, "镜下描述：")
+            raw_micro = re.sub(r"^镜下描述[：:]\s*", "", str(data.get("microscopic_desc") or "").strip())
+            _replace_section_paragraphs_in_place(doc, p_micro, p_diag, raw_micro.splitlines(), t_micro)
+
+        if p_diag is not None and p_sig is not None:
+            _set_paragraph_text_preserving_style(p_diag, "病理诊断：")
+            raw_diag = re.sub(r"^病理诊断[：:]\s*", "", str(data.get("pathology_diag") or "").strip())
+            _replace_section_paragraphs_in_place(doc, p_diag, p_sig, raw_diag.splitlines(), t_diag)
+
+    if (update_report_text or update_signature) and p_sig is not None:
+        rep_doc = data.get("report_doctor") or "张医生"
+        rev_doc = data.get("review_doctor") or "李主任"
+        rep_date = data.get("report_date")
+        if not rep_date:
+            import datetime
+            rep_date = datetime.date.today().strftime("%Y年%m月%d日")
+        _format_signature_paragraph(doc, p_sig._p, table0, rep_doc, rev_doc, rep_date)
+
+    backup_before_overwrite(doc_path, lock_label="报告文件")
+    try:
+        doc.save(doc_path)
+    except (PermissionError, IOError) as pe:
+        raise PermissionError(
+            f"保存报告文件失败（文件可能被 Word/WPS 打开占用或权限不足）: {os.path.basename(doc_path)}"
+        ) from pe
+    return doc_path

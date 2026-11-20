@@ -5,49 +5,171 @@ Generates an A4 medical report HTML preview from docx and patient data.
 Supports exact multi-image table layout (1-9 images) and 2-page preview.
 """
 import os
+import re
 import json
 import html
 import urllib.parse
 import docx
 
+
+def _normalize_extracted_date(raw_text):
+    """Normalize Chinese or ISO date text into (cn_str, raw_yyyy_mm_dd)."""
+    s = str(raw_text or "").strip()
+    if not s:
+        return "", ""
+    m_cn = re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?", s)
+    if m_cn:
+        y, m, d = m_cn.groups()
+        return f"{y}年{int(m):02d}月{int(d):02d}日", f"{y}-{int(m):02d}-{int(d):02d}"
+    m_iso = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
+    if m_iso:
+        y, m, d = m_iso.groups()
+        return f"{y}年{int(m):02d}月{int(d):02d}日", f"{y}-{int(m):02d}-{int(d):02d}"
+    return s, ""
+
+
+def _parse_table0_fields(table0):
+    """Parse key-value metadata cells from Table 0 while deduplicating merged cells."""
+    fields = {}
+    label_map = {
+        "姓名": "name",
+        "性别": "gender",
+        "年龄": "age",
+        "病理号": "pathology_no",
+        "送检单位": "send_unit",
+        "科室": "department",
+        "送检日期": "submission_date",
+        "住院号": "inpatient_no",
+        "门诊号": "outpatient_no",
+        "送检医生": "referring_doctor",
+        "临床诊断": "clinical_diagnosis",
+        "送检部位": "single_biopsy_site",
+    }
+    seen_tc = set()
+    for row in table0.rows:
+        for cell in row.cells:
+            tc = cell._tc
+            if tc in seen_tc:
+                continue
+            seen_tc.add(tc)
+            cell_text = re.sub(r"\s+", " ", cell.text.replace("\r", " ").replace("\n", " ")).strip()
+            if not cell_text:
+                continue
+            m = re.match(r"^([^：:]+?)[：:]\s*(.*)$", cell_text)
+            if not m:
+                continue
+            lbl, val = m.group(1).strip(), m.group(2).strip()
+            if lbl in label_map:
+                fields[label_map[lbl]] = val
+    return fields
+
+
+def _parse_image_site_table(tables):
+    """Parse numbered biopsy sites (1. xxx, 2. xxx ...) below image grid in Table 1."""
+    if len(tables) < 2:
+        return None, []
+    site_map = {}
+    seen_tc = set()
+    for tbl in tables[1:]:
+        for row in tbl.rows:
+            for cell in row.cells:
+                tc = cell._tc
+                if tc in seen_tc:
+                    continue
+                seen_tc.add(tc)
+                t = cell.text.strip()
+                if not t:
+                    continue
+                m = re.match(r"^(\d+)\s*[.、．]\s*(.*)$", t, re.S)
+                if m:
+                    idx = int(m.group(1))
+                    if 1 <= idx <= 9:
+                        site_map[idx] = m.group(2).strip()
+    if not site_map:
+        return None, []
+    max_idx = max(site_map.keys())
+    sites = [site_map.get(i, "") for i in range(1, max_idx + 1)]
+    return max_idx, sites
+
+
 def extract_docx_details(doc_path):
-    """Extract text fields from docx if file exists."""
-    if not os.path.exists(doc_path):
+    """
+    Full reverse parser for generated or externally edited pathology Word documents.
+    Extracts Table 0 patient info, Table 1 multi-site labels, microscopic description,
+    pathology diagnosis, doctor signature line, and medical history.
+    """
+    if not doc_path or not os.path.exists(doc_path):
         return None
     try:
         doc = docx.Document(doc_path)
         content = {
             "microscopic_desc": "",
             "pathology_diag": "",
-            "history_line": ""
+            "history_line": "",
+            "medical_history": "",
         }
-        
+
+        if doc.tables:
+            t0_fields = _parse_table0_fields(doc.tables[0])
+            content.update(t0_fields)
+            if "pathology_no" in content:
+                content["pathology_no"] = content["pathology_no"].strip().upper()
+            if "submission_date" in content:
+                sub_cn, sub_raw = _normalize_extracted_date(content["submission_date"])
+                content["submission_date"] = sub_cn or content["submission_date"]
+                content["submission_date_raw"] = sub_raw
+
+        img_cnt_t1, sites_t1 = _parse_image_site_table(doc.tables)
+        if img_cnt_t1 is not None:
+            content["image_count"] = img_cnt_t1
+            content["biopsy_sites"] = sites_t1
+        elif "single_biopsy_site" in content:
+            single_site = content["single_biopsy_site"]
+            content["image_count"] = 1
+            content["biopsy_sites"] = [single_site] if single_site else []
+
         current_section = None
         for p in doc.paragraphs:
             text = p.text.strip()
             if not text:
                 continue
-            if "镜下描述：" in text:
+            if text.startswith("镜下描述：") or text.startswith("镜下描述:"):
                 current_section = "micro"
-                desc = text.replace("镜下描述：", "").strip()
+                desc = re.sub(r"^镜下描述[：:]\s*", "", text).strip()
                 if desc:
                     content["microscopic_desc"] = desc
-            elif "病理诊断：" in text:
+            elif text.startswith("病理诊断：") or text.startswith("病理诊断:"):
                 current_section = "diag"
-                diag = text.replace("病理诊断：", "").strip()
+                diag = re.sub(r"^病理诊断[：:]\s*", "", text).strip()
                 if diag:
                     content["pathology_diag"] = diag
-            elif "报告医生：" in text and "审核医生：" in text:
+            elif ("报告医生" in text and ("审核医生" in text or "报告日期" in text)) or text.startswith("报告医生：") or text.startswith("报告医生:"):
                 current_section = None
-            elif text.startswith("病史："):
-                current_section = None
-                content["history_line"] = text.replace("病史：", "").strip()
+                m_rep = re.search(r"报告医生[：:]\s*(.*?)(?=\s*(?:审核医生|报告日期)[：:]|$)", text)
+                m_rev = re.search(r"审核医生[：:]\s*(.*?)(?=\s*报告日期[：:]|$)", text)
+                m_date = re.search(r"报告日期[：:]\s*(.*)$", text)
+                if m_rep:
+                    content["report_doctor"] = m_rep.group(1).strip()
+                if m_rev:
+                    content["review_doctor"] = m_rev.group(1).strip()
+                if m_date:
+                    rep_cn, rep_raw = _normalize_extracted_date(m_date.group(1).strip())
+                    content["report_date"] = rep_cn
+                    content["report_date_raw"] = rep_raw
+            elif text.startswith("病史：") or text.startswith("病史:"):
+                current_section = "history"
+                hist_val = re.sub(r"^病史[：:]\s*", "", text).strip()
+                content["history_line"] = hist_val
+                content["medical_history"] = hist_val
             else:
                 if current_section == "micro":
                     content["microscopic_desc"] += ("\n" + text if content["microscopic_desc"] else text)
                 elif current_section == "diag":
                     content["pathology_diag"] += ("\n" + text if content["pathology_diag"] else text)
-                    
+                elif current_section == "history":
+                    content["history_line"] += ("\n" + text if content["history_line"] else text)
+                    content["medical_history"] = content["history_line"]
+
         return content
     except Exception as e:
         print(f"[DocPreview] Error reading docx: {e}")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-皮肤病理报告系统 - 快速入门操作手册 PDF 生成脚本 (v5.0 标准 SOP 版)
+皮肤病理报告系统 - 快速入门操作手册 PDF 生成脚本 (v6.0 标准 SOP 版)
 定位：纯临床实操标准作业程序 (SOP)，聚焦“需要做什么、怎么做、不能做什么”，
       语言通俗简练，配系统流程图与脱敏 WebUI 实景标注截图。
 """
@@ -288,7 +288,7 @@ def _page_footer(canvas, doc):
     canvas.saveState()
     canvas.setFont("YaHei", 8)
     canvas.setFillColor(GRAY_TEXT)
-    canvas.drawString(18 * mm, 10 * mm, "皮肤病理报告系统 v5.0｜标准操作手册 (SOP)")
+    canvas.drawString(18 * mm, 10 * mm, "皮肤病理报告系统 v6.0｜标准操作手册 (SOP)")
     canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"第 {doc.page} 页")
     canvas.restoreState()
 
@@ -308,7 +308,7 @@ def build_manual_pdf(pdf_path, screenshots_dir=None):
         rightMargin=18 * mm,
         topMargin=14 * mm,
         bottomMargin=16 * mm,
-        title="皮肤病理报告系统 快速入门操作手册 (SOP v5.0)",
+        title="皮肤病理报告系统 快速入门操作手册 (SOP v6.0)",
     )
     st = _styles()
     story = []
@@ -317,7 +317,7 @@ def build_manual_pdf(pdf_path, screenshots_dir=None):
     banner = Table(
         [
             [Paragraph("皮肤病理报告系统 · 快速入门操作手册", st["title"])],
-            [Paragraph("版本：v5.0 标准操作指南 (SOP)｜极简上手·一看就会·直接照做", st["subtitle"])],
+            [Paragraph("版本：v6.0 标准操作指南 (SOP)｜极简上手·一看就会·直接照做", st["subtitle"])],
         ],
         colWidths=[174 * mm],
     )
@@ -357,9 +357,9 @@ def build_manual_pdf(pdf_path, screenshots_dir=None):
     # 编号前缀速查小表
     prefix_tbl = Table(
         [
-            [Paragraph("<b>病理编号前缀速查（登记时按患者来源点选）</b>", ParagraphStyle("PH", fontName="YaHeiBold", fontSize=9.5, textColor=colors.white)), "", "", "", ""],
+            [Paragraph("<b>病理编号前缀速查（登记时按报告分类点选）</b>", ParagraphStyle("PH", fontName="YaHeiBold", fontSize=9.5, textColor=colors.white)), "", "", "", ""],
             ["无前缀", "B 前缀", "L 前缀", "H 前缀", "T 前缀"],
-            ["常规门诊/住院患者", "本部院区患者", "分院区患者", "疑难病理会诊", "院外自带切片/外检"],
+            ["普通门诊报告", "病房报告", "分院区门诊报告", "会诊报告", "其他特殊报告"],
         ],
         colWidths=[34.8 * mm] * 5,
     )
@@ -394,8 +394,8 @@ def build_manual_pdf(pdf_path, screenshots_dir=None):
         ),
         do_not=(
             "• <b>不要</b>自己硬编和别人一样的病理号——系统会提示重号并拦截。<br/>"
-            "• <b>不要</b>选了 4 张图却只填 2 个送检部位，部位框要和图片张数保持一致。<br/>"
-            "• <b>不要</b>手动改名或移动系统自动生成的患者文件夹，否则系统找不到报告。"
+            "• <b>不要</b>在外部用 Word 手动改病理号或改“临床照片”文件夹名；如需改病理号请回网页「修改患者信息」改，改名后若遇弹窗按需确认立即重归档即可。<br/>"
+            "• <b>不要</b>选了 4 张图却只填 2 个送检部位，部位框要和图片张数保持一致。"
         ),
     ))
     _add_screenshot(story, st, screenshots_dir, "shot1_entry.png", "附图 1：患者录入界面按钮引导（①自动编号 → ②填表选图数 → ③保存建档 → ④临床对照）", max_h_mm=128)
@@ -414,8 +414,8 @@ def build_manual_pdf(pdf_path, screenshots_dir=None):
             "<b>④ 归档/打一页：</b>常规或已审核通过病例点【<b>一键归档</b>】，需要打核对单可点右侧【<b>打印第一页</b>】。"
         ),
         do_not=(
-            "• <b>不要</b>开着电脑版 Word 占用同一份报告，同时又在网页里点“保存报告并输出”——会提示文件被占用，先关掉 Word 再操作。<br/>"
-            "• <b>不要</b>把显微图塞到无关目录或新建杂乱子文件夹里，请直接放在当前患者照片文件夹中。<br/>"
+            "• <b>不要</b>开着电脑版 Word 占用同一份报告，同时又在网页里点“保存报告并输出”——先保存并关掉 Word 再回网页。<br/>"
+            "• <b>不要</b>在外部用 Word 改完字后无视弹窗盲目覆盖；列表出现「Word已外改」时点【<b>确定</b>】即可一键导入外部修改并保留字体颜色和批注。<br/>"
             "• <b>不要</b>把还勾着“待审核 / 需重切”的疑难病例强行直接归档，先保存分流进审核队列。"
         ),
     ))
@@ -503,9 +503,19 @@ def build_manual_pdf(pdf_path, screenshots_dir=None):
             "直接再双击一次桌面「启动系统(无黑框后台版).vbs」，网页会自动弹出来",
         ],
         [
+            "患者列表显示黄标「Word已外改」或保存被拦截",
+            "有人直接用电脑 Word 改过并保存了这份文件",
+            "点患者后在弹窗点【确定】即可把 Word 里的改字/红字/批注同步进系统（不愿保留点后续确认按系统重盖）",
+        ],
+        [
             "点生成或归档提示“文件被占用 / 无法保存”",
             "您用电脑版 Word 打开了这份报告还没关",
             "把任务栏里对应的 Word 窗口保存并关闭，回网页再点一次按钮即可",
+        ],
+        [
+            "删除或覆盖时弹出“回收站移入失败—防永久删除拦截”",
+            "工作目录处于网络共享盘或权限受限，无法进回收站",
+            "不建议直接永久删除，请核对无误后再确认；日常旧版本报告会自动先存一份到系统回收站",
         ],
         [
             "想给某位患者补改几天前已经归档的报告",

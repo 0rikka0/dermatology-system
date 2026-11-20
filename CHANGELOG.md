@@ -1,6 +1,27 @@
 # 更新日志 (CHANGELOG)
 
-> **版本制定规则**：自项目首次上传至 GitHub 的 `v1.0` 版本起，**大型功能或架构更新版本号 `+1.0`，小型修复或规范调整版本号 `+0.1`**，当前最新版本为 **`v5.0`**。
+> **版本制定规则**：自项目首次上传至 GitHub 的 `v1.0` 版本起，**大型功能或架构更新版本号 `+1.0`，小型修复或规范调整版本号 `+0.1`**，当前最新版本为 **`v6.0`**。
+
+---
+
+## v6.0（2026-11-21）— 大型更新 (+1.0)
+**外部 Word 修改智能检测与三层级隔离双向同步、全链路防静默永删与覆写备份机制、主键唯一归档治理**
+- **外部 Word 修改检测（SHA-256 指纹治理）**：
+  - 在 `patients` 与 `ihc_reports` 双表引入 `doc_sync_meta` JSON 指纹列，系统每次写入/分发 Word 副本均精准刷新规范化路径 SHA-256 哈希；检查时自动跳过 Word `~$` 锁文件，并对空指纹历史老数据零误报；
+  - 列表页展示轻量化 `⚠️ Word已外改` 状态徽章；点击选中、打开编辑/预览/首页打印，或任意保存/覆写/归档接口（`PUT /api/patients/<no>`、`/api/reports/save`、`/api/reviews/save`、`/api/ihc/save`、`/api/reports/archive`、`/api/ihc/archive` 等）命中冲突时以 `HTTP 409 (EXTERNAL_MODIFIED_CONFLICT)` 强拦截并弹窗交由用户选择**正向导入**或**移入回收站备份后反写覆盖**。
+- **全量逆向解析与富文本/批注就地保留**：
+  - 升级 `app/doc_preview.py` 的 `extract_docx_details()`（改用强引用 `cell._tc` 去重防 lxml 代理内存复用误去重），精准逆向解析 `tables[0]` 12 项字段、`tables[1]` 多位点送检部位（1–9 图）、多行镜下描述/病理诊断/病史及签名日期；
+  - 在 `app/doc_generator.py` 新增 `update_docx_preserving_styles()` 就地更新引擎（自动清空标题行残留并保护 `w:drawing`/`w:pict`/`w:commentRangeStart` 批注锚点），配合 `shutil.copy2` 同级分发，完整保留医生在 Word 中自定义添加的高亮颜色、字体样式与审阅批注。
+- **三层级严格隔离与跨报告公共信息同步（`POST /api/patients/<no>/sync_from_docx`）**：
+  - 划分**录入层**、**草稿层（输出/待审核/重切/完成审核）**、**成品层（已归档/免疫组化已归档）**三大互不越权层级：录入层外改仅同步基本资料与临床照片（A3 下游诊断保护）；草稿层同级保真分发且不改录入/成品层；成品层导入直更数据库并自动规范归档文件命名，保持 `archived=1`；组化与普通报告支持公共基本信息双向跨文档同步，并以 `409 PATHOLOGY_NO_MISMATCH` 强制阻断外部误改错份报告。
+- **主键（`pathology_no`）唯一归档匹配与边界防护**：
+  - 所有改名、改号（含立即及延迟重归档）、撤销、清理及组化文件匹配重构为基于 `_matches_patient_no()` 主键匹配，彻底消除换名/换号后 `已归档报告/` 遗留旧名重复文件；重命名全程严禁触碰 `临床照片/` 原始影像目录；修复 `sanitize_filename` 将换行符清洗为中文分号 `；`。
+- **全链路删除与覆盖安全性重构**：
+  - 彻底重构 `safe_delete_path()`：优先调用内置打包的 `send2trash`，PowerShell 降级超时提升至 20s 并改为无 `shell=True` 安全参数列表传参；当回收站（如 UNC 网络共享路径）彻底不可用时严禁静默调用永久删除，改为抛出 `RecycleBinFailedError` 返回 `HTTP 409 (confirm_permanent: true)` 提示框由用户二次确认；
+  - 新增 `backup_before_overwrite()`，在 `doc_generator`、`signing_sheet_generator`、`archive_patient_report`、`archive_ihc_report` 及特殊归档同步等全部覆写挂载点执行“先回收旧文件、再写入新文件”；`/api/ihc/create` 禁止静默覆写已有组化草稿；
+  - 新增每日首次启动及删患前 SQLite `Connection.backup()` WAL 一致性快照与 **20 份回收站轮转留存**（`数据库/backups/`）；`rename_patient_files_and_folders()` 所有移动前采用 `_move_path_safe()` 处理冲突并禁止静默吞错。
+- **文档与规范同步重构**：
+  - 明确病理号五类标准前缀定义（无前缀=普通门诊报告、B=病房报告、L=分院区门诊报告、H=会诊报告、T=其他特殊报告），全面更新 `README.md`、架构全景手册、`18 大`核心冲突说明、图文标注 SOP PDF 手册及开源脱敏审计日志。
 
 ---
 

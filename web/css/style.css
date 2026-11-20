@@ -2086,3 +2086,16 @@ textarea.form-control {
     margin: 10mm 15mm;
   }
 }
+
+.badge-external-mod {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #f59e0b;
+  font-weight: 700;
+}
+
+.patient-item.external-modified-card,
+.patient-list-item.external-modified-card,
+.output-item-card.external-modified-card {
+  border-color: #f59e0b;
+}

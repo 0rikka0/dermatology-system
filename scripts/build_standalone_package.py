@@ -71,8 +71,12 @@ def build_package():
 
     needed_packages = [
         "docx", "python_docx-1.1.2.dist-info", "lxml", "typing_extensions.py",
-        "openpyxl", "openpyxl-3.1.5.dist-info", "et_xmlfile", "et_xmlfile-2.0.0.dist-info"
+        "openpyxl", "openpyxl-3.1.5.dist-info", "et_xmlfile", "et_xmlfile-2.0.0.dist-info",
+        "send2trash",
     ]
+    for item in os.listdir(sp_src):
+        if item.lower().startswith("send2trash-") and item.lower().endswith(".dist-info"):
+            needed_packages.append(item)
     for pkg in needed_packages:
         src_pkg = os.path.join(sp_src, pkg)
         if os.path.exists(src_pkg):
@@ -81,6 +85,8 @@ def build_package():
             else:
                 shutil.copy2(src_pkg, os.path.join(sp_dst, pkg))
             print(f"  -> 复制第三方依赖库: {pkg}")
+    if not os.path.exists(os.path.join(sp_dst, "send2trash")):
+        raise RuntimeError("打包失败：当前 Python 环境缺少 send2trash 依赖，请先执行 pip install Send2Trash！")
 
     # 3. Copy Application Code & Assets (Simplified, Clean Portable Package)
     print("[Build] 复制系统源码及界面静态资源...")

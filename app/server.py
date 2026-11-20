@@ -6,6 +6,7 @@ Uses standard library ThreadingHTTPServer.
 import os
 import sys
 import re
+import shutil
 import html
 import json
 import threading
@@ -42,6 +43,7 @@ from app.path_manager import (
     sync_review_photos_to_making_and_siblings,
     find_patient_archive_dir,
     find_patient_archive_path,
+    find_patient_ihc_folder,
     find_patient_ihc_archive_path,
     create_ihc_report_package,
     archive_ihc_report,
@@ -49,13 +51,28 @@ from app.path_manager import (
     delete_ihc_report_files,
     revoke_patient_archive_files,
     revoke_patient_approval_files,
-    get_signing_sheet_dir
+    get_signing_sheet_dir,
+    get_archived_report_filename,
+    sanitize_filename,
+    _ensure_writable,
+    _move_path_safe,
+    _paths_same_entry,
+    backup_before_overwrite,
+    collect_patient_doc_paths,
+    update_doc_sync_meta_entries,
+    remap_doc_sync_meta_paths,
+    inspect_patient_doc_sync,
+    distribute_docx_copy,
+    RecycleBinFailedError,
+    ConfirmRequiredError,
+    permanent_delete_context,
 )
 from app.database import (
     init_db,
     get_patient,
     check_duplicate,
     get_next_pathology_no,
+    parse_pathology_no,
     insert_patient,
     update_patient,
     get_today_patients,
@@ -74,6 +91,10 @@ from app.database import (
     revoke_ihc_archive_db,
     delete_ihc_report_and_clear_status,
     update_ihc_paths,
+    update_patient_doc_sync_meta,
+    update_ihc_doc_sync_meta,
+    update_patient_fields_from_external,
+    update_ihc_fields_from_external,
     get_output_regular_patients,
     get_output_special_approved_patients,
     get_output_ihc_patients,
@@ -89,7 +110,7 @@ from app.template_manager import (
     parse_photo_filename,
     format_pathology_diagnosis
 )
-from app.doc_generator import generate_report_file, update_report_file
+from app.doc_generator import generate_report_file, update_report_file, update_docx_preserving_styles
 from app.doc_preview import render_preview_html, extract_docx_details
 from app.signing_sheet_generator import (
     generate_signing_sheet_excel,
@@ -215,6 +236,232 @@ def _canonicalize_review_selected_images(selected_images, making_photo_dir):
         else:
             canonical.append(item)
     return canonical
+
+
+COMMON_PATIENT_FIELDS = (
+    "name", "gender", "age", "inpatient_no", "outpatient_no",
+    "referring_doctor", "clinical_diagnosis", "medical_history",
+    "submission_date", "submission_date_raw", "send_unit", "department",
+)
+
+
+def _norm_selected_images_signature(selected_images):
+    """Build deterministic list of (slot, normcase_path) to detect whether image slots changed."""
+    sig = []
+    if not isinstance(selected_images, list):
+        return sig
+    for idx, item in enumerate(selected_images):
+        if isinstance(item, dict):
+            slot = int(item.get("slot") or (idx + 1))
+            p = item.get("path") or ""
+        else:
+            slot = idx + 1
+            p = str(item or "")
+        np = os.path.normcase(os.path.normpath(p)) if p else ""
+        sig.append((slot, np))
+    return sig
+
+
+def _write_report_docx_smart(
+    templates_dir,
+    target_path,
+    data_for_doc,
+    existing_selected_images=None,
+    new_selected_images=None,
+    existing_image_count=None,
+    new_image_count=None,
+    source_doc_path="",
+):
+    """
+    Preserve existing Word custom styles/highlights/comments whenever an existing .docx
+    has the same image_count and selected image paths; otherwise generate cleanly from template.
+    """
+    src_p = source_doc_path or target_path
+    can_preserve = bool(
+        src_p
+        and os.path.isfile(src_p)
+        and existing_image_count is not None
+        and new_image_count is not None
+        and int(existing_image_count or 1) == int(new_image_count or 1)
+        and _norm_selected_images_signature(existing_selected_images)
+        == _norm_selected_images_signature(new_selected_images)
+    )
+    if can_preserve:
+        if not _paths_same_entry(src_p, target_path):
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            backup_before_overwrite(target_path, lock_label="报告文件")
+            shutil.copy2(src_p, target_path)
+        return update_docx_preserving_styles(
+            target_path,
+            data_for_doc,
+            update_demographics=True,
+            update_report_text=True,
+            update_sites=True,
+            update_signature=True,
+        )
+    return generate_report_file(templates_dir, target_path, data_for_doc)
+
+
+def _refresh_patient_sync_meta(work_dir, db_path, p_no, roles_to_refresh, base_meta=None):
+    """Recompute and persist tracked SHA-256 hashes for specified patient doc roles."""
+    patient = get_patient(db_path, p_no)
+    if not patient or not work_dir:
+        return patient
+    docs = collect_patient_doc_paths(work_dir, patient)
+    pairs = {}
+    for r in (roles_to_refresh or []):
+        if r in docs:
+            pairs[r] = docs[r]["path"]
+        else:
+            pairs[r] = ""
+    starting_meta = base_meta if base_meta is not None else patient.get("doc_sync_meta")
+    new_meta = update_doc_sync_meta_entries(starting_meta, pairs, prune_missing=True)
+    return update_patient_doc_sync_meta(db_path, p_no, new_meta)
+
+
+def _refresh_ihc_sync_meta(work_dir, db_path, p_no, roles_to_refresh, base_meta=None):
+    """Recompute and persist tracked SHA-256 hashes for specified ihc_reports doc roles."""
+    patient = get_patient(db_path, p_no)
+    ihc = get_ihc_report(db_path, p_no)
+    if not patient or not ihc or not work_dir:
+        return ihc
+    docs = collect_patient_doc_paths(work_dir, patient, ihc_data=ihc)
+    pairs = {}
+    for r in (roles_to_refresh or []):
+        if r in docs:
+            pairs[r] = docs[r]["path"]
+        else:
+            pairs[r] = ""
+    starting_meta = base_meta if base_meta is not None else ihc.get("doc_sync_meta")
+    new_meta = update_doc_sync_meta_entries(starting_meta, pairs, prune_missing=True)
+    return update_ihc_doc_sync_meta(db_path, p_no, new_meta)
+
+
+def _attach_sync_flags(work_dir, db_path, patient_dict, ihc_data=None):
+    """Attach external Word modification flags without blocking or spamming dialogs."""
+    if not patient_dict or not work_dir:
+        return patient_dict
+    p_no = patient_dict.get("pathology_no", "")
+    ihc_obj = ihc_data if ihc_data is not None else patient_dict.get("ihc_report")
+    if ihc_obj is None and db_path and p_no:
+        ihc_obj = get_ihc_report(db_path, p_no)
+    sync_res = inspect_patient_doc_sync(work_dir, patient_dict, ihc_data=ihc_obj)
+    out = dict(patient_dict)
+    out["external_modified"] = sync_res["external_modified"]
+    out["ihc_external_modified"] = sync_res["ihc_external_modified"]
+    out["any_external_modified"] = sync_res["any_external_modified"]
+    out["external_modified_files"] = sync_res["modified_files"]
+    out["ihc_external_modified_files"] = sync_res["ihc_modified_files"]
+    out["external_modified_tiers"] = sync_res["modified_tiers"]
+    out["ihc_external_modified_tiers"] = sync_res["ihc_modified_tiers"]
+    if isinstance(out.get("ihc_report"), dict):
+        ihc_copy = dict(out["ihc_report"])
+        ihc_copy["external_modified"] = sync_res["ihc_external_modified"]
+        ihc_copy["external_modified_files"] = sync_res["ihc_modified_files"]
+        out["ihc_report"] = ihc_copy
+    return out
+
+
+def _attach_sync_flags_list(work_dir, db_path, patients_list):
+    return [_attach_sync_flags(work_dir, db_path, p) for p in (patients_list or [])]
+
+
+def _check_external_conflict_payload(work_dir, db_path, patient, tier_groups, req_body=None, ihc_data=None):
+    """
+    If any file within `tier_groups` has been externally modified (unless explicitly bypassed),
+    return a 409 JSON conflict payload; otherwise return None.
+    """
+    if req_body and (req_body.get("ignore_external_mod") or req_body.get("force_overwrite_external")):
+        return None
+    if not patient or not work_dir:
+        return None
+    ihc_obj = ihc_data if ihc_data is not None else get_ihc_report(db_path, patient.get("pathology_no", ""))
+    sync_res = inspect_patient_doc_sync(work_dir, patient, ihc_data=ihc_obj)
+    groups = set(tier_groups or [])
+    matches = [m for m in sync_res["modified_files"] if m["tier_group"] in groups]
+    matches.extend([m for m in sync_res["ihc_modified_files"] if m["tier_group"] in groups])
+    if not matches:
+        return None
+    labels = "、".join(dict.fromkeys(m["label"] for m in matches))
+    return {
+        "success": False,
+        "code": "EXTERNAL_MODIFIED_CONFLICT",
+        "confirm_sync": True,
+        "pathology_no": patient.get("pathology_no", ""),
+        "modified_files": matches,
+        "primary_source": matches[0],
+        "modified_tiers": sorted(list({m["tier_group"] for m in matches})),
+        "error": f"检测到患者 [{patient.get('name', '')}] 的外部 Word 文件已修改（{labels}），为防止直接覆盖丢失外部修改内容，请先选择导入外部修改或按系统数据覆盖！"
+    }
+
+
+def _remap_single_path(path_val, renamed_pairs):
+    if not path_val or not renamed_pairs:
+        return path_val
+    norm_val = os.path.normcase(os.path.normpath(os.path.abspath(path_val)))
+    sorted_pairs = sorted(
+        [(old_p, new_p) for old_p, new_p in renamed_pairs if old_p and new_p],
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for old_p, new_p in sorted_pairs:
+        old_n = os.path.normcase(os.path.normpath(os.path.abspath(old_p)))
+        if norm_val == old_n:
+            return new_p
+    for old_p, new_p in sorted_pairs:
+        old_n = os.path.normcase(os.path.normpath(os.path.abspath(old_p)))
+        sep_old = old_n + os.sep
+        if norm_val.startswith(sep_old):
+            rel = os.path.abspath(path_val)[len(os.path.abspath(old_p)):].lstrip("\\/")
+            return os.path.join(new_p, rel)
+    return path_val
+
+
+def _rewrite_prefix_preserving_diag(old_filename, new_no, new_name, fallback_diag=""):
+    """Keep diagnostic tail from an old filename while substituting sanitized new_no and new_name."""
+    base = os.path.basename(str(old_filename or "").strip())
+    is_ihc = base.endswith("_免疫组化报告.docx")
+    stem = os.path.splitext(base)[0]
+    if is_ihc:
+        stem = stem[:-len("_免疫组化报告")]
+    parts = stem.split("_", 2)
+    diag_tail = parts[2] if len(parts) >= 3 and parts[2] else sanitize_filename(fallback_diag or "已诊断")
+    return f"{sanitize_filename(new_no)}_{sanitize_filename(new_name)}_{diag_tail}.docx"
+
+
+def _compute_rearchive_flags(patient_dict, ihc_dict=None):
+    """Compute ask_rearchive / ask_ihc_rearchive / pending_blocked_archived / rearchive_scope."""
+    was_archived = (patient_dict or {}).get("archived") in (1, 2)
+    rev_st = str((patient_dict or {}).get("review_status", ""))
+    is_approved = (rev_st == "完成审核")
+    is_still_pending = (not is_approved) and (
+        any(k in rev_st for k in ("待审核", "重切"))
+        or int((patient_dict or {}).get("is_pending_review", 0)) == 1
+        or int((patient_dict or {}).get("is_needs_recut", 0)) == 1
+    )
+    ask_rearchive = bool(was_archived and not is_still_pending)
+    pending_blocked_archived = bool(was_archived and is_still_pending)
+    archive_source = "review" if is_approved else "maker"
+    ask_ihc_rearchive = bool(
+        ihc_dict
+        and ihc_dict.get("ihc_created")
+        and ihc_dict.get("archived") in (1, 2)
+    )
+    if ask_rearchive and ask_ihc_rearchive:
+        scope = "both"
+    elif ask_rearchive:
+        scope = "normal"
+    elif ask_ihc_rearchive:
+        scope = "ihc"
+    else:
+        scope = "none"
+    return {
+        "ask_rearchive": ask_rearchive,
+        "ask_ihc_rearchive": ask_ihc_rearchive,
+        "pending_blocked_archived": pending_blocked_archived,
+        "archive_source": archive_source,
+        "rearchive_scope": scope,
+    }
 
 
 def print_word_documents(file_paths, page1_only=True):
@@ -378,11 +625,15 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def read_json_body(self):
+        if hasattr(self, "_cached_json_body") and self._cached_json_body is not None:
+            return self._cached_json_body
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length > 0:
-            raw = self.rfile.read(content_length).decode("utf-8")
-            return json.loads(raw)
-        return {}
+            raw = self.rfile.read(content_length).decode("utf-8").strip()
+            self._cached_json_body = json.loads(raw) if raw else {}
+        else:
+            self._cached_json_body = {}
+        return self._cached_json_body
 
     def end_headers(self):
         # Prevent browser caching of static JS/CSS in local desktop application
@@ -477,36 +728,60 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
         return super().do_GET()
 
+    def _dispatch_api(self, parsed, handler_fn, error_prefix="服务器处理失败"):
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        self._cached_json_body = None
+        force_perm = query.get("force_permanent", [""])[0].strip().lower() in ("1", "true", "yes")
+        if not force_perm:
+            try:
+                body = self.read_json_body()
+                if isinstance(body, dict) and body.get("force_permanent"):
+                    force_perm = True
+            except Exception:
+                pass
+        try:
+            with permanent_delete_context(force_perm):
+                handler_fn(path)
+        except RecycleBinFailedError as rbe:
+            self.send_json({
+                "success": False,
+                "code": "RECYCLE_BIN_FAILED",
+                "confirm_permanent": True,
+                "failed_path": rbe.target_path,
+                "error": str(rbe)
+            }, status=409)
+        except ConfirmRequiredError as cre:
+            self.send_json({
+                "success": False,
+                "code": cre.code,
+                "confirm_required": True,
+                "target_path": cre.target_path,
+                "error": str(cre)
+            }, status=409)
+        except (PermissionError, FileExistsError) as pe:
+            self.send_error_json(str(pe), status=409)
+        except Exception as e:
+            self.send_error_json(f"{error_prefix}: {str(e)}", status=500)
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        if path.startswith("/api/"):
-            try:
-                self.handle_api_post(path)
-            except Exception as e:
-                self.send_error_json(f"服务器处理失败: {str(e)}", status=500)
+        if parsed.path.startswith("/api/"):
+            self._dispatch_api(parsed, self.handle_api_post, error_prefix="服务器处理失败")
             return
         self.send_error(404, "Not Found")
 
     def do_PUT(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        if path.startswith("/api/"):
-            try:
-                self.handle_api_put(path)
-            except Exception as e:
-                self.send_error_json(f"服务器处理失败: {str(e)}", status=500)
+        if parsed.path.startswith("/api/"):
+            self._dispatch_api(parsed, self.handle_api_put, error_prefix="服务器处理失败")
             return
         self.send_error(404, "Not Found")
 
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        if path.startswith("/api/"):
-            try:
-                self.handle_api_delete(path)
-            except Exception as e:
-                self.send_error_json(f"删除失败: {str(e)}", status=500)
+        if parsed.path.startswith("/api/"):
+            self._dispatch_api(parsed, self.handle_api_delete, error_prefix="删除失败")
             return
         self.send_error(404, "Not Found")
 
@@ -642,6 +917,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 patients = get_today_patients(db_path, report_date=rep_date, submission_date=sub_date, keyword=kw)
             else:
                 patients = get_today_patients(db_path)
+            patients = _attach_sync_flags_list(work_dir, db_path, patients)
             self.send_json({"success": True, "patients": patients, "count": len(patients)})
             return
 
@@ -657,6 +933,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             patients = get_patients_for_report_making(
                 db_path, date_raw=d_raw, keyword=kw, report_date=rep_date, submission_date=sub_date
             )
+            patients = _attach_sync_flags_list(work_dir, db_path, patients)
             self.send_json({"success": True, "patients": patients, "count": len(patients)})
             return
 
@@ -674,7 +951,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 db_path, include_approved=include_approved,
                 report_date=rep_date, submission_date=sub_date, keyword=kw
             )
-            enriched = [_attach_review_photo_dir(work_dir, p) for p in patients]
+            enriched = [_attach_sync_flags(work_dir, db_path, _attach_review_photo_dir(work_dir, p)) for p in patients]
             self.send_json({"success": True, "patients": enriched, "count": len(enriched)})
             return
 
@@ -727,6 +1004,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             patients = get_patients_for_ihc(
                 db_path, report_date=rep_date, submission_date=sub_date, keyword=kw
             )
+            patients = _attach_sync_flags_list(work_dir, db_path, patients)
             self.send_json({"success": True, "patients": patients, "count": len(patients)})
             return
 
@@ -771,6 +1049,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                         self.send_error_json("该患者尚未创建免疫组化报告", status=400)
                         return
                     prev_data, doc_path = _build_ihc_preview_data(patient, ihc)
+                    prev_data = _attach_sync_flags(work_dir, db_path, prev_data, ihc_data=ihc)
                     preview_html = render_preview_html(prev_data, doc_path=doc_path)
                     self.send_json({"success": True, "html": preview_html, "patient": prev_data, "doc_path": doc_path})
                     return
@@ -795,6 +1074,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "outpatient_no": query.get("outpatient_no", [""])[0]
             }
             results = search_patients(db_path, query_params)
+            results = _attach_sync_flags_list(work_dir, db_path, results)
             self.send_json({"success": True, "patients": results, "count": len(results)})
             return
 
@@ -838,6 +1118,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 sub_start_date=sub_start,
                 sub_end_date=sub_end
             )
+            patients = _attach_sync_flags_list(work_dir, db_path, patients)
             self.send_json({"success": True, "patients": patients, "count": len(patients)})
             return
 
@@ -896,25 +1177,27 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                             self.send_error_json("该患者尚未创建免疫组化报告", status=400)
                             return
                         prev_data, doc_path = _build_ihc_preview_data(patient, ihc)
+                        prev_data = _attach_sync_flags(work_dir, db_path, prev_data, ihc_data=ihc)
                         preview_html = render_preview_html(prev_data, doc_path=doc_path)
                         self.send_json({"success": True, "html": preview_html, "patient": prev_data, "doc_path": doc_path})
                         return
                     word_path = patient.get("final_report_path")
                     if not word_path or not os.path.exists(word_path):
                         word_path = patient.get("word_path") or get_patient_word_path(work_dir, pathology_no, patient["name"])
+                    patient_with_sync = _attach_sync_flags(work_dir, db_path, patient)
                     preview_html = render_preview_html(patient, doc_path=word_path)
-                    self.send_json({"success": True, "html": preview_html, "patient": patient})
+                    self.send_json({"success": True, "html": preview_html, "patient": patient_with_sync})
                     return
 
                 # All related paths for patient (Requirement 3)
                 if len(parts) == 4 and parts[3] == "paths":
                     ihc = get_ihc_report(db_path, pathology_no)
                     paths_list = locate_patient_all_paths(work_dir, patient, ihc_data=ihc)
-                    self.send_json({"success": True, "paths": paths_list, "patient": patient})
+                    self.send_json({"success": True, "paths": paths_list, "patient": _attach_sync_flags(work_dir, db_path, patient, ihc_data=ihc)})
                     return
 
                 # Details
-                self.send_json({"success": True, "patient": patient})
+                self.send_json({"success": True, "patient": _attach_sync_flags(work_dir, db_path, patient)})
                 return
 
         self.send_error_json("未知的GET API接口", status=404)
@@ -1009,6 +1292,8 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             # 1.3 Insert to database
             created_patient = insert_patient(db_path, body)
+            created_patient = _refresh_patient_sync_meta(work_dir, db_path, pathology_no, ["entry"])
+            created_patient = _attach_sync_flags(work_dir, db_path, created_patient)
 
             self.send_json({
                 "success": True,
@@ -1093,6 +1378,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
                 return
 
+            conflict = _check_external_conflict_payload(work_dir, db_path, patient, ["draft", "entry"], req_body=body)
+            if conflict:
+                self.send_json(conflict, status=409)
+                return
+
             path_diag = body.get("pathology_diag", "").strip()
             micro_desc = body.get("microscopic_desc", "").strip()
             selected_images = body.get("selected_images", [])
@@ -1115,8 +1405,22 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             })
 
             templates_dir = cfg.get("templates_dir")
+            existing_out_doc = ""
+            if os.path.isfile(final_report_path):
+                existing_out_doc = final_report_path
+            elif patient.get("final_report_path") and os.path.isfile(patient.get("final_report_path")):
+                existing_out_doc = patient.get("final_report_path")
             try:
-                generate_report_file(templates_dir, final_report_path, data_for_doc)
+                _write_report_docx_smart(
+                    templates_dir,
+                    final_report_path,
+                    data_for_doc,
+                    existing_selected_images=patient.get("selected_images", []),
+                    new_selected_images=selected_images,
+                    existing_image_count=patient.get("image_count", 1),
+                    new_image_count=image_count,
+                    source_doc_path=existing_out_doc,
+                )
                 cleanup_stale_output_reports(work_dir, p_no, patient["name"], keep_path=final_report_path)
             except PermissionError as pe:
                 self.send_error_json(str(pe), status=409)
@@ -1137,8 +1441,9 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             # Sync image_count and biopsy_sites if modified
             if image_count != patient["image_count"] or biopsy_sites != patient["biopsy_sites"]:
+                cur_after_making = get_patient(db_path, p_no) or patient
                 update_patient(db_path, p_no, {
-                    **patient,
+                    **cur_after_making,
                     "image_count": image_count,
                     "biopsy_sites": biopsy_sites
                 })
@@ -1155,7 +1460,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(str(pe), status=409)
                 return
 
-            updated_p = _attach_review_photo_dir(work_dir, updated_p)
+            updated_p = _refresh_patient_sync_meta(
+                work_dir, db_path, p_no,
+                ["draft_output", "draft_pending", "draft_recut", "draft_approved"],
+            )
+            updated_p = _attach_sync_flags(work_dir, db_path, _attach_review_photo_dir(work_dir, updated_p))
             self.send_json({
                 "success": True,
                 "message": f"报告制作完成并已输出！文件: {os.path.basename(final_report_path)}",
@@ -1165,7 +1474,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        def _archive_single_patient(patient, source="maker", allow_word_fallback=True):
+        def _archive_single_patient(patient, source="maker", allow_word_fallback=True, req_body=None):
             p_no = patient["pathology_no"]
             rev_st = str(patient.get("review_status", ""))
             is_approved = (rev_st == "完成审核")
@@ -1178,6 +1487,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                     None,
                 )
 
+            conflict = _check_external_conflict_payload(work_dir, db_path, patient, ["draft", "archive", "entry"], req_body=req_body)
+            if conflict:
+                return 409, conflict, None
+
             report_file = patient.get("final_report_path")
             if allow_word_fallback and (not report_file or not os.path.exists(report_file)):
                 report_file = patient.get("word_path")
@@ -1186,14 +1499,25 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 return 400, "未找到该患者生成的Word报告，请先制作并保存报告", None
 
             try:
-                arch_res = archive_patient_report(work_dir, patient, report_file, is_from_review=(source == "review" or is_approved))
+                extra_old = [patient.get("archive_dir")] if patient.get("archive_dir") else None
+                arch_res = archive_patient_report(
+                    work_dir,
+                    patient,
+                    report_file,
+                    is_from_review=(source == "review" or is_approved),
+                    extra_old_paths=extra_old,
+                )
             except PermissionError as pe:
                 return 409, str(pe), None
             if not arch_res.get("success"):
                 return 400, arch_res.get("error", "归档失败"), None
 
             mark_patient_archived(db_path, p_no, arch_res["archive_dir"])
-            updated_p = _attach_review_photo_dir(work_dir, get_patient(db_path, p_no))
+            updated_p = _refresh_patient_sync_meta(
+                work_dir, db_path, p_no,
+                ["archive", "draft_approved", "draft_pending", "draft_recut"],
+            )
+            updated_p = _attach_sync_flags(work_dir, db_path, _attach_review_photo_dir(work_dir, updated_p))
             return 200, "", {"arch_res": arch_res, "patient": updated_p}
 
         # 8. Archive Patient Report (2.8 & 3)
@@ -1209,9 +1533,12 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
                 return
 
-            st_code, err_msg, res_data = _archive_single_patient(patient, source=source, allow_word_fallback=True)
+            st_code, err_msg, res_data = _archive_single_patient(patient, source=source, allow_word_fallback=True, req_body=body)
             if st_code != 200:
-                self.send_error_json(err_msg, status=st_code)
+                if isinstance(err_msg, dict):
+                    self.send_json(err_msg, status=st_code)
+                else:
+                    self.send_error_json(err_msg, status=st_code)
                 return
 
             arch_res = res_data["arch_res"]
@@ -1272,15 +1599,26 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             archived_nos = []
             failed = []
             for p in candidates:
-                st_code, err_msg, _ = _archive_single_patient(p, source="maker", allow_word_fallback=False)
+                st_code, err_msg, _ = _archive_single_patient(p, source="maker", allow_word_fallback=False, req_body=body)
                 if st_code == 200:
                     archived_nos.append(p["pathology_no"])
                 else:
-                    failed.append({
-                        "pathology_no": p["pathology_no"],
-                        "name": p.get("name", ""),
-                        "error": err_msg
-                    })
+                    if isinstance(err_msg, dict):
+                        fail_item = {
+                            "pathology_no": p["pathology_no"],
+                            "name": p.get("name", ""),
+                            "error": err_msg.get("error", "归档冲突"),
+                            "code": err_msg.get("code", ""),
+                            "confirm_sync": bool(err_msg.get("confirm_sync")),
+                            "modified_files": err_msg.get("modified_files", []),
+                        }
+                    else:
+                        fail_item = {
+                            "pathology_no": p["pathology_no"],
+                            "name": p.get("name", ""),
+                            "error": err_msg,
+                        }
+                    failed.append(fail_item)
 
             if archived_nos and not failed:
                 msg = f"今日已成功批量归档 {len(archived_nos)} 份已保存报告！"
@@ -1289,7 +1627,7 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             else:
                 msg = f"批量归档失败（{len(failed)} 份未能归档）：{failed[0]['error']}"
 
-            self.send_json({
+            resp_payload = {
                 "success": len(archived_nos) > 0,
                 "today": today_str,
                 "archived_count": len(archived_nos),
@@ -1297,7 +1635,15 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "archived_nos": archived_nos,
                 "failed": failed,
                 "message": msg
-            }, status=200 if archived_nos else 409)
+            }
+            if len(failed) == 1 and not archived_nos and failed[0].get("code") == "EXTERNAL_MODIFIED_CONFLICT":
+                resp_payload.update({
+                    "code": "EXTERNAL_MODIFIED_CONFLICT",
+                    "confirm_sync": True,
+                    "pathology_no": failed[0]["pathology_no"],
+                    "modified_files": failed[0].get("modified_files", []),
+                })
+            self.send_json(resp_payload, status=200 if archived_nos else 409)
             return
 
         def _save_review_report_internal(req_body):
@@ -1305,6 +1651,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             patient = get_patient(db_path, p_no)
             if not patient:
                 return 404, f"未找到病理号为 [{p_no}] 的患者", None
+
+            conflict = _check_external_conflict_payload(work_dir, db_path, patient, ["draft", "entry"], req_body=req_body)
+            if conflict:
+                return 409, conflict, None
 
             path_diag = req_body.get("pathology_diag", patient.get("pathology_diag", "")).strip()
             micro_desc = req_body.get("microscopic_desc", patient.get("microscopic_desc", "")).strip()
@@ -1350,8 +1700,27 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             })
 
             templates_dir = cfg.get("templates_dir")
+            existing_out_doc = ""
+            if os.path.isfile(final_report_path):
+                existing_out_doc = final_report_path
+            elif patient.get("final_report_path") and os.path.isfile(patient.get("final_report_path")):
+                existing_out_doc = patient.get("final_report_path")
+            elif rev_info and rev_info.get("folder_dir"):
+                cand_rev_doc = os.path.join(rev_info["folder_dir"], f"[病理报告]{os.path.basename(rev_info['folder_dir'])}.docx")
+                if os.path.isfile(cand_rev_doc):
+                    existing_out_doc = cand_rev_doc
+
             try:
-                generate_report_file(templates_dir, final_report_path, data_for_doc)
+                _write_report_docx_smart(
+                    templates_dir,
+                    final_report_path,
+                    data_for_doc,
+                    existing_selected_images=_canonicalize_review_selected_images(patient.get("selected_images", []), making_photo_dir),
+                    new_selected_images=selected_images,
+                    existing_image_count=patient.get("image_count", 1),
+                    new_image_count=image_count,
+                    source_doc_path=existing_out_doc,
+                )
                 cleanup_stale_output_reports(work_dir, p_no, patient["name"], keep_path=final_report_path)
             except PermissionError as pe:
                 return 409, str(pe), None
@@ -1394,7 +1763,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             except PermissionError as pe:
                 return 409, str(pe), None
 
-            updated_p = _attach_review_photo_dir(work_dir, updated_p)
+            updated_p = _refresh_patient_sync_meta(
+                work_dir, db_path, p_no,
+                ["draft_output", "draft_pending", "draft_recut", "draft_approved"],
+            )
+            updated_p = _attach_sync_flags(work_dir, db_path, _attach_review_photo_dir(work_dir, updated_p))
             return 200, "", {
                 "overwritten": overwritten_paths,
                 "final_report_path": final_report_path,
@@ -1409,7 +1782,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             st_code, err_msg, res_data = _save_review_report_internal(body)
             if st_code != 200:
-                self.send_error_json(err_msg, status=st_code)
+                if isinstance(err_msg, dict):
+                    self.send_json(err_msg, status=st_code)
+                else:
+                    self.send_error_json(err_msg, status=st_code)
                 return
 
             updated_p = res_data["patient"]
@@ -1432,7 +1808,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             st_code, err_msg, res_data = _save_review_report_internal(body)
             if st_code != 200:
-                self.send_error_json(err_msg, status=st_code)
+                if isinstance(err_msg, dict):
+                    self.send_json(err_msg, status=st_code)
+                else:
+                    self.send_error_json(err_msg, status=st_code)
                 return
 
             final_report_path = res_data["final_report_path"]
@@ -1484,11 +1863,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 return
 
             # Locate original archived report in 已归档报告/ (strictly required)
-            arch_file = find_patient_archive_path(work_dir, p_no, patient["name"])
-            if (not arch_file or not os.path.exists(arch_file)) and patient.get("archive_dir"):
-                cand = patient.get("archive_dir")
-                if os.path.isfile(cand) and not cand.endswith("_免疫组化报告.docx"):
-                    arch_file = cand
+            arch_file = find_patient_archive_path(
+                work_dir, p_no, patient["name"],
+                extra_archive_path=patient.get("archive_dir", ""),
+            )
 
             if not arch_file or not os.path.exists(arch_file):
                 self.send_error_json(
@@ -1497,11 +1875,16 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 )
                 return
 
-            try:
-                pkg = create_ihc_report_package(work_dir, patient, arch_file)
-            except PermissionError as pe:
-                self.send_error_json(str(pe), status=409)
+            ihc_existing = get_ihc_report(db_path, p_no)
+            conflict = _check_external_conflict_payload(
+                work_dir, db_path, patient, ["ihc_draft", "archive"], req_body=body, ihc_data=ihc_existing
+            )
+            if conflict:
+                self.send_json(conflict, status=409)
                 return
+
+            force_overwrite = bool(body.get("force_overwrite", body.get("confirm_overwrite", False)))
+            pkg = create_ihc_report_package(work_dir, patient, arch_file, force_overwrite=force_overwrite)
 
             doc_details = extract_docx_details(arch_file) or {}
             ihc_saved = upsert_ihc_report(db_path, p_no, {
@@ -1524,12 +1907,14 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "archive_file": ""
             }, mode="create")
 
+            ihc_saved = _refresh_ihc_sync_meta(work_dir, db_path, p_no, ["ihc_draft"])
             updated_p = dict(patient)
             updated_p["ihc_report"] = ihc_saved
+            updated_p = _attach_sync_flags(work_dir, db_path, updated_p, ihc_data=ihc_saved)
             self.send_json({
                 "success": True,
                 "message": f"已为患者 [{patient['name']}] 创建独立的免疫组化报告草稿与照片目录！",
-                "ihc_report": ihc_saved,
+                "ihc_report": updated_p["ihc_report"],
                 "patient": updated_p
             })
             return
@@ -1549,6 +1934,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             ihc = get_ihc_report(db_path, p_no)
             if not ihc or not ihc.get("ihc_created") or not ihc.get("ihc_doc_path"):
                 self.send_error_json("请先点击【创建免疫组化报告】后再保存", status=400)
+                return
+
+            conflict = _check_external_conflict_payload(work_dir, db_path, patient, ["ihc_draft"], req_body=body, ihc_data=ihc)
+            if conflict:
+                self.send_json(conflict, status=409)
                 return
 
             path_diag = body.get("pathology_diag", ihc.get("pathology_diag", "")).strip()
@@ -1583,7 +1973,16 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             templates_dir = cfg.get("templates_dir")
             try:
-                generate_report_file(templates_dir, ihc["ihc_doc_path"], data_for_doc)
+                _write_report_docx_smart(
+                    templates_dir,
+                    ihc["ihc_doc_path"],
+                    data_for_doc,
+                    existing_selected_images=ihc.get("selected_images", []),
+                    new_selected_images=selected_images,
+                    existing_image_count=ihc.get("image_count") or patient.get("image_count", 1),
+                    new_image_count=image_count,
+                    source_doc_path=ihc["ihc_doc_path"],
+                )
             except PermissionError as pe:
                 self.send_error_json(str(pe), status=409)
                 return
@@ -1600,13 +1999,15 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "biopsy_sites": biopsy_sites
             }, mode="save")
 
+            ihc_saved = _refresh_ihc_sync_meta(work_dir, db_path, p_no, ["ihc_draft"])
             updated_p = dict(patient)
             updated_p["ihc_report"] = ihc_saved
+            updated_p = _attach_sync_flags(work_dir, db_path, updated_p, ihc_data=ihc_saved)
             self.send_json({
                 "success": True,
                 "message": f"免疫组化报告已独立保存（未改动原报告）！文件: {os.path.basename(ihc['ihc_doc_path'])}",
                 "ihc_doc_path": ihc["ihc_doc_path"],
-                "ihc_report": ihc_saved,
+                "ihc_report": updated_p["ihc_report"],
                 "patient": updated_p
             })
             return
@@ -1628,8 +2029,14 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json("未找到可归档的免疫组化报告，请先创建并保存免疫组化报告", status=400)
                 return
 
+            conflict = _check_external_conflict_payload(work_dir, db_path, patient, ["ihc_draft", "ihc_archive"], req_body=body, ihc_data=ihc)
+            if conflict:
+                self.send_json(conflict, status=409)
+                return
+
             try:
-                arch_res = archive_ihc_report(work_dir, patient, ihc)
+                extra_old = [ihc.get("archive_file")] if ihc.get("archive_file") else None
+                arch_res = archive_ihc_report(work_dir, patient, ihc, extra_old_paths=extra_old)
             except PermissionError as pe:
                 self.send_error_json(str(pe), status=409)
                 return
@@ -1638,15 +2045,25 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(arch_res.get("error", "免疫组化报告归档失败"), status=400)
                 return
 
-            ihc_archived = mark_ihc_archived(db_path, p_no, arch_res["archive_file"])
+            mark_ihc_archived(db_path, p_no, arch_res["archive_file"])
+            src_upd = {}
+            if arch_res.get("source_archive_filename") and arch_res["source_archive_filename"] != ihc.get("source_archive_filename"):
+                src_upd["source_archive_filename"] = arch_res["source_archive_filename"]
+            if arch_res.get("source_archive_path") and arch_res["source_archive_path"] != ihc.get("source_archive_path"):
+                src_upd["source_archive_path"] = arch_res["source_archive_path"]
+            if src_upd:
+                update_ihc_fields_from_external(db_path, p_no, src_upd)
+
+            ihc_archived = _refresh_ihc_sync_meta(work_dir, db_path, p_no, ["ihc_archive"])
             updated_p = dict(patient)
             updated_p["ihc_report"] = ihc_archived
+            updated_p = _attach_sync_flags(work_dir, db_path, updated_p, ihc_data=ihc_archived)
             self.send_json({
                 "success": True,
                 "message": f"免疫组化报告已归档至【已归档报告】：{arch_res['filename']}",
                 "archive_file": arch_res["archive_file"],
                 "filename": arch_res["filename"],
-                "ihc_report": ihc_archived,
+                "ihc_report": updated_p["ihc_report"],
                 "patient": updated_p
             })
             return
@@ -1708,6 +2125,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
                 return
 
+            conflict = _check_external_conflict_payload(work_dir, db_path, patient, ["draft", "entry"], req_body=body)
+            if conflict:
+                self.send_json(conflict, status=409)
+                return
+
             path_diag = body.get("pathology_diag", "").strip()
             micro_desc = body.get("microscopic_desc", "").strip()
             selected_images = body.get("selected_images", [])
@@ -1729,8 +2151,22 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             })
 
             templates_dir = cfg.get("templates_dir")
+            existing_out_doc = ""
+            if os.path.isfile(final_report_path):
+                existing_out_doc = final_report_path
+            elif patient.get("final_report_path") and os.path.isfile(patient.get("final_report_path")):
+                existing_out_doc = patient.get("final_report_path")
             try:
-                generate_report_file(templates_dir, final_report_path, data_for_doc)
+                _write_report_docx_smart(
+                    templates_dir,
+                    final_report_path,
+                    data_for_doc,
+                    existing_selected_images=patient.get("selected_images", []),
+                    new_selected_images=selected_images,
+                    existing_image_count=patient.get("image_count", 1),
+                    new_image_count=image_count,
+                    source_doc_path=existing_out_doc,
+                )
                 cleanup_stale_output_reports(work_dir, p_no, patient["name"], keep_path=final_report_path)
             except PermissionError as pe:
                 self.send_error_json(str(pe), status=409)
@@ -1749,6 +2185,14 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 "review_doctor": data_for_doc["review_doctor"]
             })
 
+            if image_count != patient["image_count"] or biopsy_sites != patient["biopsy_sites"]:
+                cur_after_making = get_patient(db_path, p_no) or patient
+                update_patient(db_path, p_no, {
+                    **cur_after_making,
+                    "image_count": image_count,
+                    "biopsy_sites": biopsy_sites
+                })
+
             updated_p = get_patient(db_path, p_no)
             try:
                 if updated_p.get("review_status") == "完成审核" and not updated_p.get("is_pending_review") and not updated_p.get("is_needs_recut"):
@@ -1759,11 +2203,15 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(str(pe), status=409)
                 return
 
+            updated_p = _refresh_patient_sync_meta(
+                work_dir, db_path, p_no,
+                ["draft_output", "draft_pending", "draft_recut", "draft_approved"],
+            )
             # Silent Word printing of Page 1 only
             printed, failed, print_err = print_word_documents([final_report_path], page1_only=True)
             print_ok = (len(printed) == 1 and not failed)
 
-            updated_p = get_patient(db_path, p_no)
+            updated_p = _attach_sync_flags(work_dir, db_path, _attach_review_photo_dir(work_dir, updated_p))
             self.send_json({
                 "success": True,
                 "message": "报告已保存，已调用Word发送第1页至默认打印机！" if print_ok else f"报告已保存，但调用Word打印失败: {print_err or '请检查Word及默认打印机'}",
@@ -1796,6 +2244,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             # Update database
             updated_p = update_patient_status(db_path, pathology_no, review_status=new_rev, archived=new_arch)
+            updated_p = _refresh_patient_sync_meta(
+                work_dir, db_path, pathology_no,
+                ["archive", "draft_output", "draft_pending", "draft_recut", "draft_approved"],
+            )
+            updated_p = _attach_sync_flags(work_dir, db_path, updated_p)
             self.send_json({
                 "success": True,
                 "message": f"患者 [{patient['name']}] 状态已成功更新并同步相关文件！",
@@ -1816,8 +2269,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 ihc = get_ihc_report(db_path, p_no)
                 revoke_ihc_archive_files(work_dir, patient, ihc)
                 updated_ihc = revoke_ihc_archive_db(db_path, p_no)
+                updated_ihc = _refresh_ihc_sync_meta(work_dir, db_path, p_no, ["ihc_archive"])
                 updated_p = dict(patient)
                 updated_p["ihc_report"] = updated_ihc
+                updated_p = _attach_sync_flags(work_dir, db_path, updated_p, ihc_data=updated_ihc)
                 self.send_json({
                     "success": True,
                     "message": f"已成功撤销患者 [{patient['name']}] 的免疫组化报告归档，并从已归档目录移除了对应免疫组化报告！",
@@ -1827,6 +2282,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             revoke_patient_archive_files(work_dir, patient)
             updated_p = revoke_patient_archive_db(db_path, p_no)
+            updated_p = _refresh_patient_sync_meta(
+                work_dir, db_path, p_no,
+                ["archive", "draft_pending", "draft_recut", "draft_approved"],
+            )
+            updated_p = _attach_sync_flags(work_dir, db_path, updated_p)
             self.send_json({
                 "success": True,
                 "message": f"已成功撤销患者 [{patient['name']}] 的归档状态，并从归档目录中移除了对应文件！",
@@ -1844,6 +2304,11 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
 
             updated_p = revoke_patient_approval_db(db_path, p_no)
             revoke_patient_approval_files(work_dir, patient, updated_p.get("review_status", ""))
+            updated_p = _refresh_patient_sync_meta(
+                work_dir, db_path, p_no,
+                ["draft_pending", "draft_recut", "draft_approved"],
+            )
+            updated_p = _attach_sync_flags(work_dir, db_path, _attach_review_photo_dir(work_dir, updated_p))
             self.send_json({
                 "success": True,
                 "message": f"已成功撤销患者 [{patient['name']}] 的完成审核状态，患者已返回待审核列表！",
@@ -2053,6 +2518,468 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        # 20. Synchronize Externally Modified Word Documents (Forward Import / Reverse Overwrite)
+        if path.startswith("/api/patients/") and path.endswith("/sync_from_docx"):
+            if not cfg.get("initialized"):
+                self.send_error_json("系统尚未初始化工作目录")
+                return
+            parts = path.strip("/").split("/")
+            if len(parts) != 4:
+                self.send_error_json("无效的同步路径", status=400)
+                return
+            p_no = parts[2].strip().upper()
+            patient = get_patient(db_path, p_no)
+            if not patient:
+                self.send_error_json(f"未找到病理号为 [{p_no}] 的患者", status=404)
+                return
+
+            action = str(body.get("action") or "forward").strip().lower()
+            if action not in ("forward", "reverse"):
+                self.send_error_json("无效的同步操作类型（仅支持 forward / reverse）", status=400)
+                return
+
+            ihc = get_ihc_report(db_path, p_no)
+            all_docs = collect_patient_doc_paths(work_dir, patient, ihc_data=ihc)
+            sync_info = inspect_patient_doc_sync(work_dir, patient, ihc_data=ihc)
+            all_modified = sync_info["modified_files"] + sync_info["ihc_modified_files"]
+
+            req_role = str(body.get("source_role") or "").strip()
+            req_path = str(body.get("source_path") or "").strip()
+
+            chosen_role = ""
+            chosen_path = ""
+            if req_role and req_role in all_docs:
+                chosen_role = req_role
+                chosen_path = all_docs[req_role]["path"]
+            elif req_path:
+                for r_key, r_info in all_docs.items():
+                    if _paths_same_entry(r_info["path"], req_path):
+                        chosen_role = r_key
+                        chosen_path = r_info["path"]
+                        break
+            elif all_modified:
+                chosen_role = all_modified[0]["role"]
+                chosen_path = all_modified[0]["path"]
+
+            if not chosen_role or not chosen_path or not os.path.isfile(chosen_path):
+                self.send_error_json("未定位到需要同步的外部 Word 文档，或文件已被移除", status=404)
+                return
+
+            templates_dir = cfg.get("templates_dir")
+
+            # -------- Reverse Overwrite: recycle modified external file and overwrite from internal data --------
+            if action == "reverse":
+                _ensure_writable(chosen_path, lock_label="待覆盖的外部 Word 文件")
+                if chosen_role == "entry":
+                    generate_report_file(templates_dir, chosen_path, patient)
+                    updated_p = _refresh_patient_sync_meta(work_dir, db_path, p_no, ["entry"])
+                elif chosen_role.startswith("draft_"):
+                    final_p = patient.get("final_report_path") or get_final_report_path(
+                        work_dir,
+                        p_no,
+                        patient["name"],
+                        patient.get("pathology_diag") or patient.get("clinical_diagnosis") or "",
+                    )
+                    unmodified_out = (
+                        final_p
+                        and os.path.isfile(final_p)
+                        and chosen_role != "draft_output"
+                        and not any(m["role"] == "draft_output" for m in sync_info["modified_files"])
+                    )
+                    if unmodified_out:
+                        distribute_docx_copy(final_p, [chosen_path], lock_label="待覆盖的审核草稿文件")
+                    else:
+                        generate_report_file(templates_dir, final_p, patient)
+                        cleanup_stale_output_reports(work_dir, p_no, patient["name"], keep_path=final_p)
+                        if chosen_role != "draft_output" and not _paths_same_entry(final_p, chosen_path):
+                            distribute_docx_copy(final_p, [chosen_path], lock_label="待覆盖的草稿文件")
+                        if patient.get("final_report_path") != final_p:
+                            update_patient_fields_from_external(db_path, p_no, {"final_report_path": final_p})
+                    updated_p = _refresh_patient_sync_meta(
+                        work_dir, db_path, p_no,
+                        ["draft_output", "draft_pending", "draft_recut", "draft_approved"],
+                    )
+                elif chosen_role == "archive":
+                    src_rep = patient.get("final_report_path")
+                    if not src_rep or not os.path.isfile(src_rep):
+                        src_rep = patient.get("word_path")
+                    if src_rep and os.path.isfile(src_rep) and not any(m["role"] == "draft_output" for m in sync_info["modified_files"]):
+                        arch_res = archive_patient_report(
+                            work_dir,
+                            patient,
+                            src_rep,
+                            is_from_review=(patient.get("review_status") == "完成审核"),
+                            extra_old_paths=[patient.get("archive_dir"), chosen_path],
+                        )
+                        update_patient_fields_from_external(db_path, p_no, {"archive_dir": arch_res["archive_dir"], "archived": 1})
+                    else:
+                        generate_report_file(templates_dir, chosen_path, patient)
+                        update_patient_fields_from_external(db_path, p_no, {"archive_dir": chosen_path, "archived": 1})
+                    updated_p = _refresh_patient_sync_meta(
+                        work_dir, db_path, p_no,
+                        ["archive", "draft_approved"],
+                    )
+                elif chosen_role == "ihc_draft":
+                    merged_ihc, _ = _build_ihc_preview_data(patient, ihc)
+                    generate_report_file(templates_dir, chosen_path, merged_ihc)
+                    _refresh_ihc_sync_meta(work_dir, db_path, p_no, ["ihc_draft"])
+                    updated_p = get_patient(db_path, p_no)
+                elif chosen_role == "ihc_archive":
+                    ihc_src = (ihc or {}).get("ihc_doc_path")
+                    if ihc_src and os.path.isfile(ihc_src) and not any(m["role"] == "ihc_draft" for m in sync_info["ihc_modified_files"]):
+                        arch_res = archive_ihc_report(work_dir, patient, ihc, extra_old_paths=[(ihc or {}).get("archive_file"), chosen_path])
+                        update_ihc_fields_from_external(db_path, p_no, {"archive_file": arch_res["archive_file"], "archived": 1})
+                    else:
+                        merged_ihc, _ = _build_ihc_preview_data(patient, ihc)
+                        generate_report_file(templates_dir, chosen_path, merged_ihc)
+                        update_ihc_fields_from_external(db_path, p_no, {"archive_file": chosen_path, "archived": 1})
+                    _refresh_ihc_sync_meta(work_dir, db_path, p_no, ["ihc_archive"])
+                    updated_p = get_patient(db_path, p_no)
+                else:
+                    updated_p = patient
+
+                ihc_after = get_ihc_report(db_path, p_no)
+                updated_p = _attach_sync_flags(work_dir, db_path, _attach_review_photo_dir(work_dir, updated_p), ihc_data=ihc_after)
+                if ihc_after:
+                    updated_p["ihc_report"] = _attach_sync_flags(work_dir, db_path, dict(updated_p), ihc_data=ihc_after).get("ihc_report", ihc_after)
+                self.send_json({
+                    "success": True,
+                    "action": "reverse",
+                    "synced_role": chosen_role,
+                    "message": "已将外部修改的 Word 文件移入回收站备份，并按系统记录重新覆盖完成！",
+                    "patient": updated_p,
+                })
+                return
+
+            # -------- Forward Import: parse external Word -> DB + tier-isolated file sync --------
+            parsed = extract_docx_details(chosen_path)
+            if not parsed:
+                self.send_error_json(f"无法解析 Word 文档内容（{os.path.basename(chosen_path)}），请确认文件未损坏", status=400)
+                return
+
+            # Clarification A2: Primary key pathology_no inside external Word must match DB
+            parsed_no = str(parsed.get("pathology_no") or "").strip().upper()
+            if parsed_no and parsed_no != p_no:
+                self.send_json({
+                    "success": False,
+                    "code": "PATHOLOGY_NO_MISMATCH",
+                    "error": (
+                        f"外部 Word 文档内的病理号（{parsed_no}）与系统当前记录的病理号（{p_no}）不一致，"
+                        "已拦截导入！病理号是系统核心主索引，如需更改请在【患者信息录入】通过界面修改。"
+                    ),
+                }, status=409)
+                return
+
+            old_name = patient["name"]
+            new_name = str(parsed.get("name") or old_name).strip() or old_name
+
+            raw_existing_age = str(patient.get("age") or "").strip()
+            existing_age_disp = (
+                raw_existing_age
+                if (not raw_existing_age or raw_existing_age.endswith(("岁", "月", "日", "天")))
+                else f"{raw_existing_age}岁"
+            )
+            parsed_age = str(parsed.get("age") or "").strip()
+            if "age" in parsed and parsed_age == existing_age_disp:
+                parsed_age = raw_existing_age
+
+            common_updates = {"name": new_name}
+            for k in ("gender", "send_unit", "department", "inpatient_no", "outpatient_no", "referring_doctor", "clinical_diagnosis", "medical_history"):
+                if k in parsed:
+                    val = str(parsed.get(k) or "").strip()
+                    if k in ("send_unit", "department") and not val:
+                        val = patient.get(k) or ("本院" if k == "send_unit" else "皮肤科")
+                    common_updates[k] = val
+            if "age" in parsed:
+                common_updates["age"] = parsed_age
+            if parsed.get("submission_date"):
+                common_updates["submission_date"] = parsed["submission_date"]
+            if parsed.get("submission_date_raw"):
+                common_updates["submission_date_raw"] = parsed["submission_date_raw"]
+
+            common_changed = any(
+                str(common_updates.get(k, patient.get(k, "")) or "").strip() != str(patient.get(k, "") or "").strip()
+                for k in common_updates
+            )
+
+            # Determine report-level parsed fields (date/doctors/diag/micro/sites)
+            rep_date_cn, rep_date_raw = normalize_report_date(parsed.get("report_date") or parsed.get("report_date_raw"))
+            if not rep_date_cn and parsed.get("report_date"):
+                rep_date_cn = str(parsed.get("report_date") or "").strip()
+            if not rep_date_raw and parsed.get("report_date_raw"):
+                rep_date_raw = str(parsed.get("report_date_raw") or "").strip()
+
+            was_patient_archived = patient.get("archived") in (1, 2)
+            was_ihc_archived = bool(ihc and ihc.get("ihc_created") and ihc.get("archived") in (1, 2))
+            patient_updates = dict(common_updates)
+            ihc_updates = {}
+            is_ihc_sync = chosen_role in ("ihc_draft", "ihc_archive")
+
+            if is_ihc_sync:
+                # IHC external edit: common info -> patients; IHC-exclusive fields -> ihc_reports only
+                if parsed.get("microscopic_desc") or "microscopic_desc" in parsed:
+                    ihc_updates["microscopic_desc"] = str(parsed.get("microscopic_desc") or "").strip()
+                if parsed.get("pathology_diag") or "pathology_diag" in parsed:
+                    ihc_updates["pathology_diag"] = str(parsed.get("pathology_diag") or "").strip()
+                if parsed.get("report_doctor"):
+                    ihc_updates["report_doctor"] = str(parsed["report_doctor"]).strip()
+                if parsed.get("review_doctor"):
+                    ihc_updates["review_doctor"] = str(parsed["review_doctor"]).strip()
+                if rep_date_cn:
+                    ihc_updates["report_date"] = rep_date_cn
+                if rep_date_raw:
+                    ihc_updates["report_date_raw"] = rep_date_raw
+                if "biopsy_sites" in parsed and parsed.get("biopsy_sites"):
+                    ihc_updates["biopsy_sites"] = parsed["biopsy_sites"]
+                if parsed.get("image_count"):
+                    ihc_updates["image_count"] = int(parsed["image_count"])
+            else:
+                has_downstream_report = bool(
+                    (patient.get("final_report_path") and os.path.exists(patient.get("final_report_path")))
+                    or str(patient.get("pathology_diag") or "").strip()
+                    or str(patient.get("microscopic_desc") or "").strip()
+                )
+                if chosen_role == "entry":
+                    # Clarification A3: protect downstream diagnosis/desc if entry file has empty diagnosis/desc
+                    if parsed.get("microscopic_desc") or not has_downstream_report:
+                        patient_updates["microscopic_desc"] = str(parsed.get("microscopic_desc") or "").strip()
+                    if parsed.get("pathology_diag") or not has_downstream_report:
+                        patient_updates["pathology_diag"] = str(parsed.get("pathology_diag") or "").strip()
+                    if parsed.get("report_doctor"):
+                        patient_updates["report_doctor"] = str(parsed["report_doctor"]).strip()
+                    if parsed.get("review_doctor"):
+                        patient_updates["review_doctor"] = str(parsed["review_doctor"]).strip()
+                    if rep_date_cn and not has_downstream_report:
+                        patient_updates["report_date"] = rep_date_cn
+                    if rep_date_raw and not has_downstream_report:
+                        patient_updates["report_date_raw"] = rep_date_raw
+                else:
+                    patient_updates["microscopic_desc"] = str(parsed.get("microscopic_desc") or "").strip()
+                    patient_updates["pathology_diag"] = str(parsed.get("pathology_diag") or "").strip()
+                    if parsed.get("report_doctor"):
+                        patient_updates["report_doctor"] = str(parsed["report_doctor"]).strip()
+                    if parsed.get("review_doctor"):
+                        patient_updates["review_doctor"] = str(parsed["review_doctor"]).strip()
+                    if rep_date_cn:
+                        patient_updates["report_date"] = rep_date_cn
+                    if rep_date_raw:
+                        patient_updates["report_date_raw"] = rep_date_raw
+
+                if "biopsy_sites" in parsed and parsed.get("biopsy_sites"):
+                    patient_updates["biopsy_sites"] = parsed["biopsy_sites"]
+                elif "single_biopsy_site" in parsed and int(patient.get("image_count") or 1) == 1:
+                    s_site = str(parsed.get("single_biopsy_site") or "").strip()
+                    patient_updates["biopsy_sites"] = [s_site] if s_site else []
+                if parsed.get("image_count") and chosen_role != "entry":
+                    patient_updates["image_count"] = int(parsed["image_count"])
+
+            # Apply folder/file renames if patient name changed in external Word (never touches 临床照片/)
+            renamed_pairs = []
+            patient_meta_cur = patient.get("doc_sync_meta")
+            ihc_meta_cur = (ihc or {}).get("doc_sync_meta")
+            if new_name != old_name:
+                rename_res = rename_patient_files_and_folders(work_dir, p_no, old_name, p_no, new_name)
+                renamed_pairs = rename_res.get("renamed_pairs", [])
+                chosen_path = _remap_single_path(chosen_path, renamed_pairs)
+                patient_updates["word_path"] = rename_res["word_path"]
+                patient_updates["photo_dir"] = rename_res["photo_dir"]
+                if rename_res.get("final_report_path"):
+                    patient_updates["final_report_path"] = rename_res["final_report_path"]
+                remapped_imgs = _remap_selected_images_dir(
+                    patient.get("selected_images", []), rename_res.get("old_photo_dir", ""), rename_res.get("photo_dir", "")
+                )
+                patient_updates["selected_images"] = remapped_imgs
+                patient_meta_cur = remap_doc_sync_meta_paths(patient_meta_cur, renamed_pairs)
+                if ihc and ihc.get("ihc_created"):
+                    r_ihc = rename_res.get("renamed_ihc") or {}
+                    new_ihc_dir = r_ihc.get("ihc_dir") or ihc.get("ihc_dir", "")
+                    new_ihc_doc = r_ihc.get("ihc_doc_path") or ihc.get("ihc_doc_path", "")
+                    new_ihc_photo = r_ihc.get("ihc_photo_dir") or ihc.get("ihc_photo_dir", "")
+                    ihc_imgs = _remap_selected_images_dir(ihc.get("selected_images", []), ihc.get("ihc_photo_dir", ""), new_ihc_photo)
+                    ihc_meta_cur = remap_doc_sync_meta_paths(ihc_meta_cur, renamed_pairs)
+                    ihc_updates.update({
+                        "ihc_dir": new_ihc_dir,
+                        "ihc_doc_path": new_ihc_doc,
+                        "ihc_photo_dir": new_ihc_photo,
+                        "selected_images": ihc_imgs,
+                        "source_archive_filename": _rewrite_prefix_preserving_diag(
+                            ihc.get("source_archive_filename", ""), p_no, new_name,
+                            fallback_diag=patient_updates.get("pathology_diag") or patient.get("pathology_diag") or "已诊断",
+                        ),
+                    })
+
+            roles_to_refresh_patient = []
+            roles_to_refresh_ihc = []
+
+            # Tier-isolated synchronization of files & archived flags:
+            if chosen_role == "archive":
+                # Clarification A1: update DB + archive filename if needed; NEVER touch upstream draft contents, NEVER set archived=2
+                eff_diag = patient_updates.get("pathology_diag") or patient.get("pathology_diag") or patient_updates.get("clinical_diagnosis") or patient.get("clinical_diagnosis") or "已诊断"
+                desired_arch_path = os.path.join(get_archive_root_dir(work_dir), get_archived_report_filename(p_no, new_name, eff_diag))
+                if not _paths_same_entry(chosen_path, desired_arch_path):
+                    _move_path_safe(chosen_path, desired_arch_path, is_dir=False, lock_label="已归档报告文件")
+                patient_updates["archive_dir"] = desired_arch_path
+                patient_updates["archived"] = 1
+                roles_to_refresh_patient = ["archive"]
+
+            elif chosen_role == "ihc_archive":
+                # Clarification A1: update patients common + ihc_reports + archive filename; NEVER touch drafts, NEVER set archived=2
+                if new_name != old_name:
+                    diag_stem = _rewrite_prefix_preserving_diag(
+                        os.path.basename(chosen_path), p_no, new_name,
+                        fallback_diag=ihc_updates.get("pathology_diag") or (ihc or {}).get("pathology_diag") or "已诊断",
+                    )
+                    desired_ihc_arch = os.path.join(
+                        get_archive_root_dir(work_dir),
+                        f"{os.path.splitext(diag_stem)[0]}_免疫组化报告.docx",
+                    )
+                    if not _paths_same_entry(chosen_path, desired_ihc_arch):
+                        _move_path_safe(chosen_path, desired_ihc_arch, is_dir=False, lock_label="已归档免疫组化报告文件")
+                    chosen_path = desired_ihc_arch
+                ihc_updates["archive_file"] = chosen_path
+                ihc_updates["archived"] = 1
+                roles_to_refresh_ihc = ["ihc_archive"]
+
+            elif chosen_role.startswith("draft_"):
+                # Tier 2: distribute byte-exact rich copy across all Tier 2 siblings (never modify Tier 1 entry or Tier 3 archive)
+                eff_diag = patient_updates.get("pathology_diag") or patient.get("pathology_diag") or patient_updates.get("clinical_diagnosis") or patient.get("clinical_diagnosis") or "已诊断"
+                target_out = get_final_report_path(work_dir, p_no, new_name, eff_diag)
+                if chosen_role == "draft_output":
+                    if not _paths_same_entry(chosen_path, target_out):
+                        _move_path_safe(chosen_path, target_out, is_dir=False, lock_label="病理报告输出文件")
+                    cleanup_stale_output_reports(work_dir, p_no, new_name, keep_path=target_out)
+                else:
+                    distribute_docx_copy(chosen_path, [target_out], lock_label="病理报告输出文件")
+                    cleanup_stale_output_reports(work_dir, p_no, new_name, keep_path=target_out)
+
+                patient_updates["final_report_path"] = target_out
+                if was_patient_archived:
+                    patient_updates["archived"] = 2
+
+                # Commit intermediate DB update before syncing special folders (needs updated name/diag/sites)
+                patient_updates["doc_sync_meta"] = patient_meta_cur
+                update_patient_fields_from_external(db_path, p_no, patient_updates)
+                cur_after = get_patient(db_path, p_no)
+                sync_updated_report_to_special_archives(work_dir, cur_after, target_out)
+
+                # If IHC exists and common basic info changed, update IHC draft demographics preserving IHC styles/text/sites
+                if common_changed and ihc and ihc.get("ihc_created"):
+                    if was_ihc_archived:
+                        ihc_updates["archived"] = 2
+                    cur_ihc_doc = ihc_updates.get("ihc_doc_path") or ihc.get("ihc_doc_path", "")
+                    if cur_ihc_doc and os.path.isfile(cur_ihc_doc):
+                        ihc_doc_data = dict(cur_after)
+                        for k in ("report_doctor", "review_doctor", "report_date", "report_date_raw", "microscopic_desc", "pathology_diag", "image_count", "biopsy_sites"):
+                            if ihc.get(k) not in (None, ""):
+                                ihc_doc_data[k] = ihc[k]
+                        update_docx_preserving_styles(
+                            cur_ihc_doc, ihc_doc_data,
+                            update_demographics=True, update_report_text=False, update_sites=False, update_signature=False,
+                        )
+                        roles_to_refresh_ihc.append("ihc_draft")
+
+                patient_updates = {}
+                roles_to_refresh_patient = ["draft_output", "draft_pending", "draft_recut", "draft_approved"]
+
+            elif chosen_role == "ihc_draft":
+                # IHC Tier 2: common info -> patients (+ entry/Tier 2 regular drafts if common info changed), IHC fields -> ihc_reports
+                if was_ihc_archived:
+                    ihc_updates["archived"] = 2
+                if common_changed and was_patient_archived:
+                    patient_updates["archived"] = 2
+
+                patient_updates["doc_sync_meta"] = patient_meta_cur
+                update_patient_fields_from_external(db_path, p_no, patient_updates)
+                cur_after = get_patient(db_path, p_no)
+                if common_changed:
+                    # Sync only demographics to entry & Tier 2 regular drafts (never overwrite report text or 已归档报告/)
+                    reg_docs = collect_patient_doc_paths(work_dir, cur_after)
+                    for r_key in ("entry", "draft_output", "draft_pending", "draft_recut", "draft_approved"):
+                        if r_key in reg_docs and os.path.isfile(reg_docs[r_key]["path"]):
+                            update_docx_preserving_styles(
+                                reg_docs[r_key]["path"], cur_after,
+                                update_demographics=True, update_report_text=False, update_sites=False, update_signature=False,
+                            )
+                            roles_to_refresh_patient.append(r_key)
+                patient_updates = {}
+                roles_to_refresh_ihc = ["ihc_draft"]
+
+            elif chosen_role == "entry":
+                # Tier 1: update DB + propagate changed common demographics into existing downstream drafts preserving styles
+                if common_changed and was_patient_archived:
+                    patient_updates["archived"] = 2
+                patient_updates["doc_sync_meta"] = patient_meta_cur
+                update_patient_fields_from_external(db_path, p_no, patient_updates)
+                cur_after = get_patient(db_path, p_no)
+                if common_changed:
+                    reg_docs = collect_patient_doc_paths(work_dir, cur_after)
+                    for r_key in ("draft_output", "draft_pending", "draft_recut", "draft_approved"):
+                        if r_key in reg_docs and os.path.isfile(reg_docs[r_key]["path"]):
+                            update_docx_preserving_styles(
+                                reg_docs[r_key]["path"], cur_after,
+                                update_demographics=True, update_report_text=False, update_sites=False, update_signature=False,
+                            )
+                            roles_to_refresh_patient.append(r_key)
+                    if ihc and ihc.get("ihc_created"):
+                        if was_ihc_archived:
+                            ihc_updates["archived"] = 2
+                        cur_ihc_doc = ihc_updates.get("ihc_doc_path") or ihc.get("ihc_doc_path", "")
+                        if cur_ihc_doc and os.path.isfile(cur_ihc_doc):
+                            ihc_doc_data = dict(cur_after)
+                            for k in ("report_doctor", "review_doctor", "report_date", "report_date_raw", "microscopic_desc", "pathology_diag", "image_count", "biopsy_sites"):
+                                if ihc.get(k) not in (None, ""):
+                                    ihc_doc_data[k] = ihc[k]
+                            update_docx_preserving_styles(
+                                cur_ihc_doc, ihc_doc_data,
+                                update_demographics=True, update_report_text=False, update_sites=False, update_signature=False,
+                            )
+                            roles_to_refresh_ihc.append("ihc_draft")
+                patient_updates = {}
+                roles_to_refresh_patient.append("entry")
+
+            # Flush any pending DB updates & refresh fingerprints
+            if patient_updates:
+                patient_updates["doc_sync_meta"] = patient_meta_cur
+                update_patient_fields_from_external(db_path, p_no, patient_updates)
+            elif renamed_pairs:
+                update_patient_doc_sync_meta(db_path, p_no, patient_meta_cur)
+
+            if ihc and (ihc_updates or renamed_pairs):
+                ihc_updates["doc_sync_meta"] = ihc_meta_cur
+                update_ihc_fields_from_external(db_path, p_no, ihc_updates)
+
+            if roles_to_refresh_patient:
+                _refresh_patient_sync_meta(work_dir, db_path, p_no, roles_to_refresh_patient)
+            if ihc and roles_to_refresh_ihc:
+                _refresh_ihc_sync_meta(work_dir, db_path, p_no, roles_to_refresh_ihc)
+
+            final_patient = get_patient(db_path, p_no)
+            final_ihc = get_ihc_report(db_path, p_no)
+            final_patient = _attach_sync_flags(
+                work_dir, db_path, _attach_review_photo_dir(work_dir, final_patient), ihc_data=final_ihc
+            )
+            if final_ihc:
+                final_patient["ihc_report"] = _attach_sync_flags(
+                    work_dir, db_path, dict(final_patient), ihc_data=final_ihc
+                ).get("ihc_report", final_ihc)
+
+            rearchive_info = (
+                {"ask_rearchive": False, "ask_ihc_rearchive": False, "pending_blocked_archived": False, "archive_source": "maker", "rearchive_scope": "none"}
+                if chosen_role in ("archive", "ihc_archive")
+                else _compute_rearchive_flags(final_patient, final_ihc)
+            )
+
+            self.send_json({
+                "success": True,
+                "action": "forward",
+                "synced_role": chosen_role,
+                "common_changed": common_changed,
+                **rearchive_info,
+                "message": f"已成功从外部 Word 导入修改并同步到系统（来源：{all_docs[chosen_role]['label']}）！",
+                "patient": final_patient,
+            })
+            return
+
         # 20. Exit System
         if path == "/api/system/exit":
             self.send_json({"success": True, "message": "系统正在安全退出..."})
@@ -2079,10 +3006,17 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"未找到病理号为 [{pathology_no}] 的患者", status=404)
                 return
 
-            # Delete all related files and folders
-            del_res = delete_patient_all_files(work_dir, patient)
+            # Delete all related files and folders (RecycleBinFailedError aborts before DB deletion)
+            ihc_data = get_ihc_report(db_path, pathology_no)
+            del_res = delete_patient_all_files(work_dir, patient, ihc_data=ihc_data)
+            if not del_res.get("success") and del_res.get("errors"):
+                self.send_error_json(
+                    "部分文件未能安全移除（可能正被占用），为避免数据库失去关联记录已中止删库：" + "；".join(del_res["errors"]),
+                    status=409
+                )
+                return
 
-            # Delete from SQLite database
+            # Delete from SQLite database (internally creates pre_delete snapshot first)
             delete_patient(db_path, pathology_no)
 
             self.send_json({
@@ -2116,7 +3050,15 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(f"无法修改病理号：目标病理号 [{new_no}] 已被患者 [{conflict['name']}] 使用", status=409)
                 return
 
-            # Handle rename of files and folders (excluding 已归档报告/)
+            ihc_existing = get_ihc_report(db_path, old_no)
+            ext_conflict = _check_external_conflict_payload(
+                work_dir, db_path, existing, ["entry", "draft", "ihc_draft"], req_body=body, ihc_data=ihc_existing
+            )
+            if ext_conflict:
+                self.send_json(ext_conflict, status=409)
+                return
+
+            # Handle rename of files and folders (excluding 已归档报告/ & 临床照片/)
             rename_res = rename_patient_files_and_folders(
                 work_dir,
                 old_no,
@@ -2124,6 +3066,10 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 new_no,
                 new_name
             )
+            renamed_pairs = rename_res.get("renamed_pairs", [])
+            remapped_patient_meta = remap_doc_sync_meta_paths(existing.get("doc_sync_meta"), renamed_pairs)
+            remapped_ihc_meta = remap_doc_sync_meta_paths((ihc_existing or {}).get("doc_sync_meta"), renamed_pairs) if ihc_existing else None
+
             body["word_path"] = rename_res["word_path"]
             body["photo_dir"] = rename_res["photo_dir"]
 
@@ -2134,17 +3080,33 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
             body["selected_images"] = selected_images
 
             # Parse updated submission_date if pathology_no changed
-            from app.database import parse_pathology_no
             parsed_no = parse_pathology_no(new_no)
             if parsed_no.get("valid"):
                 body.setdefault("submission_date", parsed_no["submission_date"])
                 body.setdefault("submission_date_raw", parsed_no["submission_date_raw"])
 
-            # Synchronize changes into draft Word document (病理报告录入)
             templates_dir = cfg.get("templates_dir")
             draft_doc_data = dict(existing)
             draft_doc_data.update(body)
-            update_report_file(templates_dir, rename_res["word_path"], draft_doc_data)
+            new_image_count = int(draft_doc_data.get("image_count") or existing.get("image_count", 1))
+            old_image_count = int(existing.get("image_count") or 1)
+            doctor_changed = (
+                str(draft_doc_data.get("report_doctor") or "") != str(existing.get("report_doctor") or "")
+                or str(draft_doc_data.get("review_doctor") or "") != str(existing.get("review_doctor") or "")
+            )
+
+            # Synchronize changes into draft Word document (病理报告录入), preserving existing styles when safe
+            if os.path.isfile(rename_res["word_path"]) and new_image_count == old_image_count:
+                update_docx_preserving_styles(
+                    rename_res["word_path"],
+                    draft_doc_data,
+                    update_demographics=True,
+                    update_report_text=False,
+                    update_sites=True,
+                    update_signature=doctor_changed,
+                )
+            else:
+                update_report_file(templates_dir, rename_res["word_path"], draft_doc_data)
 
             # Check if patient already has a saved output report or archive
             was_archived = existing.get("archived") in (1, 2)
@@ -2169,58 +3131,95 @@ class PathologyRequestHandler(SimpleHTTPRequestHandler):
                 final_doc_data = dict(existing)
                 final_doc_data.update(body)
                 final_doc_data["selected_images"] = selected_images
-                generate_report_file(templates_dir, target_final_path, final_doc_data)
+                if os.path.isfile(target_final_path) and new_image_count == old_image_count:
+                    update_docx_preserving_styles(
+                        target_final_path,
+                        final_doc_data,
+                        update_demographics=True,
+                        update_report_text=False,
+                        update_sites=True,
+                        update_signature=doctor_changed,
+                    )
+                else:
+                    generate_report_file(templates_dir, target_final_path, final_doc_data)
                 sync_updated_report_to_special_archives(work_dir, final_doc_data, target_final_path)
                 body["final_report_path"] = target_final_path
             else:
                 sync_updated_report_to_special_archives(work_dir, draft_doc_data, rename_res["word_path"])
-
-            # Determine whether to mark 需要重新归档 and prompt user to re-archive
-            # ONLY prompt when the patient's report had already been archived (was_archived).
-            rev_st = str(existing.get("review_status", ""))
-            is_approved = (rev_st == "完成审核")
-            is_still_pending = (not is_approved) and (
-                any(k in rev_st for k in ("待审核", "重切"))
-                or int(existing.get("is_pending_review", 0)) == 1
-                or int(existing.get("is_needs_recut", 0)) == 1
-            )
-            ask_rearchive = bool(was_archived and not is_still_pending)
-            archive_source = "review" if is_approved else "maker"
 
             if was_archived:
                 body["archived"] = 2
 
             # Update database record
             updated = update_patient(db_path, old_no, body)
+            updated = _refresh_patient_sync_meta(
+                work_dir, db_path, new_no,
+                ["entry", "draft_output", "draft_pending", "draft_recut", "draft_approved"],
+                base_meta=remapped_patient_meta,
+            )
 
-            # Sync independent IHC report paths/demographics if IHC report exists
-            ihc_existing = get_ihc_report(db_path, new_no)
-            if ihc_existing and ihc_existing.get("ihc_created"):
+            # Sync independent IHC report paths/demographics/source_archive_filename if IHC report exists
+            ihc_after = get_ihc_report(db_path, new_no)
+            if ihc_after and ihc_after.get("ihc_created"):
                 renamed_ihc = rename_res.get("renamed_ihc") or {}
-                new_ihc_dir = renamed_ihc.get("ihc_dir") or ihc_existing.get("ihc_dir", "")
-                new_ihc_doc = renamed_ihc.get("ihc_doc_path") or ihc_existing.get("ihc_doc_path", "")
-                new_ihc_photo = renamed_ihc.get("ihc_photo_dir") or ihc_existing.get("ihc_photo_dir", "")
-                old_ihc_photo = ihc_existing.get("ihc_photo_dir", "")
-                ihc_imgs = _remap_selected_images_dir(ihc_existing.get("selected_images", []), old_ihc_photo, new_ihc_photo)
+                new_ihc_dir = renamed_ihc.get("ihc_dir") or ihc_after.get("ihc_dir", "")
+                new_ihc_doc = renamed_ihc.get("ihc_doc_path") or ihc_after.get("ihc_doc_path", "")
+                new_ihc_photo = renamed_ihc.get("ihc_photo_dir") or ihc_after.get("ihc_photo_dir", "")
+                old_ihc_photo = ihc_after.get("ihc_photo_dir", "")
+                ihc_imgs = _remap_selected_images_dir(ihc_after.get("selected_images", []), old_ihc_photo, new_ihc_photo)
+                new_src_arch_fn = ihc_after.get("source_archive_filename", "")
+                if (new_no != old_no or new_name != existing["name"]) and new_src_arch_fn:
+                    new_src_arch_fn = _rewrite_prefix_preserving_diag(
+                        new_src_arch_fn,
+                        new_no,
+                        new_name,
+                        fallback_diag=existing.get("pathology_diag") or existing.get("clinical_diagnosis") or "已诊断",
+                    )
+
                 update_ihc_paths(
-                    db_path, new_no, new_ihc_dir, new_ihc_doc, new_ihc_photo,
-                    selected_images=ihc_imgs, mark_rearchive=(ihc_existing.get("archived") in (1, 2))
+                    db_path,
+                    new_no,
+                    new_ihc_dir,
+                    new_ihc_doc,
+                    new_ihc_photo,
+                    selected_images=ihc_imgs,
+                    mark_rearchive=(ihc_after.get("archived") in (1, 2)),
+                    source_archive_filename=new_src_arch_fn,
+                    doc_sync_meta=remapped_ihc_meta,
                 )
                 if new_ihc_doc and os.path.exists(new_ihc_doc):
                     ihc_doc_data = dict(updated)
                     for k in ("report_doctor", "review_doctor", "report_date", "report_date_raw",
                               "microscopic_desc", "pathology_diag", "image_count", "biopsy_sites"):
-                        if ihc_existing.get(k) not in (None, ""):
-                            ihc_doc_data[k] = ihc_existing[k]
+                        if ihc_after.get(k) not in (None, ""):
+                            ihc_doc_data[k] = ihc_after[k]
                     ihc_doc_data["selected_images"] = ihc_imgs
-                    generate_report_file(templates_dir, new_ihc_doc, ihc_doc_data)
+                    update_docx_preserving_styles(
+                        new_ihc_doc,
+                        ihc_doc_data,
+                        update_demographics=True,
+                        update_report_text=False,
+                        update_sites=False,
+                        update_signature=False,
+                    )
+                ihc_after = _refresh_ihc_sync_meta(
+                    work_dir, db_path, new_no, ["ihc_draft"], base_meta=remapped_ihc_meta
+                )
+
+            rearchive_flags = _compute_rearchive_flags(updated, ihc_after)
+            updated_out = _attach_sync_flags(
+                work_dir, db_path, _attach_review_photo_dir(work_dir, updated), ihc_data=ihc_after
+            )
+            if ihc_after:
+                updated_out["ihc_report"] = _attach_sync_flags(
+                    work_dir, db_path, dict(updated_out), ihc_data=ihc_after
+                ).get("ihc_report", ihc_after)
 
             self.send_json({
                 "success": True,
                 "message": f"患者 [{new_name}] 信息及Word文件已成功更新！",
-                "ask_rearchive": ask_rearchive,
-                "archive_source": archive_source,
-                "patient": updated
+                **rearchive_flags,
+                "patient": updated_out
             })
             return
 

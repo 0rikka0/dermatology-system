@@ -13,6 +13,279 @@ function startApp() {
 
   // Elements
   const tabs = document.querySelectorAll(".nav-tab-btn");
+
+  // Refresh all active workspace patient lists after sync or rename/rearchive
+  function refreshAllPatientListsQuietly() {
+    try { if (typeof loadTodayPatients === "function") loadTodayPatients(); } catch (_) {}
+    try { if (typeof loadMakingPatients === "function" && makingState && makingState.patients) loadMakingPatients(false); } catch (_) {}
+    try { if (typeof loadReviewPatients === "function" && reviewState && reviewState.patients) loadReviewPatients(false); } catch (_) {}
+    try { if (typeof loadIhcPatients === "function" && ihcState && ihcState.patients) loadIhcPatients(false); } catch (_) {}
+    try {
+      const searchTab = document.getElementById("tab-search");
+      if (searchTab && searchTab.classList.contains("active") && typeof doSearch === "function") doSearch();
+    } catch (_) {}
+    try {
+      const outTab = document.getElementById("tab-output");
+      if (outTab && outTab.classList.contains("active")) {
+        if (typeof loadOutputRegularPatients === "function") loadOutputRegularPatients();
+        if (typeof loadOutputSpecialPatients === "function") loadOutputSpecialPatients();
+        if (typeof loadOutputIhcPatients === "function") loadOutputIhcPatients();
+      }
+    } catch (_) {}
+  }
+
+  // Handle sequential normal / IHC re-archive confirmations after edit or external Word sync
+  async function promptRearchiveAfterUpdate(data, initialPatient) {
+    let savedPatient = initialPatient;
+    if (!data || !savedPatient) return savedPatient;
+
+    if (data.pending_blocked_archived) {
+      alert(
+        "⚠️ 【提示：待审核/重切患者已标注需重新归档】\n\n" +
+        "患者基本信息及草稿文件已同步更新，但由于该报告当前处于【待审核 / 重切】状态，\n" +
+        "请在【报告审核】工作区完成专家审核后，再执行重新归档！"
+      );
+    }
+
+    if (data.ask_rearchive) {
+      const wantRearchive = confirm(
+        "患者信息及关联文件（除已归档报告外）已同步更新！\n" +
+        "是否立即重新归档【普通/原病理报告】？\n\n" +
+        "点击【确定】立即自动归档（旧版归档文件将自动移入回收站备份）；\n" +
+        "点击【取消】标注为【需要重新归档】。"
+      );
+      if (wantRearchive) {
+        try {
+          const archData = await fetchJsonWithSafetyConfirm("/api/reports/archive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pathology_no: savedPatient.pathology_no,
+              source: data.archive_source || "maker"
+            })
+          });
+          if (archData.success) {
+            showToast(archData.message || "报告已自动重新归档！", "success");
+            if (archData.duplicate_clinical_photos) {
+              alert(archData.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，请手动核对归档临床照片！");
+            }
+            if (archData.patient) savedPatient = archData.patient;
+          } else if (!archData.cancelled) {
+            showToast("重新归档失败: " + (archData.error || "未知错误"), "error");
+          }
+        } catch (archErr) {
+          showToast("重新归档请求异常: " + archErr.message, "error");
+        }
+      } else {
+        showToast("已将原报告标注为【需要重新归档】", "info");
+      }
+    }
+
+    if (data.ask_ihc_rearchive) {
+      const wantIhcRearchive = confirm(
+        "检测到该患者同时存在【已归档免疫组化报告】，基本公共信息已同步更新！\n" +
+        "是否立即重新归档【免疫组化报告】？\n\n" +
+        "点击【确定】立即自动归档免疫组化报告（旧版归档将自动移入回收站备份）；\n" +
+        "点击【取消】标注免疫组化为【需要重新归档】。"
+      );
+      if (wantIhcRearchive) {
+        try {
+          const ihcArchData = await fetchJsonWithSafetyConfirm("/api/ihc/archive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pathology_no: savedPatient.pathology_no })
+          });
+          if (ihcArchData.success) {
+            showToast(ihcArchData.message || "免疫组化报告已自动重新归档！", "success");
+            if (ihcArchData.patient) {
+              savedPatient = Object.assign({}, savedPatient, { ihc_report: ihcArchData.ihc_report || ihcArchData.patient.ihc_report });
+            }
+          } else if (!ihcArchData.cancelled) {
+            showToast("免疫组化重新归档失败: " + (ihcArchData.error || "未知错误"), "error");
+          }
+        } catch (ihcErr) {
+          showToast("免疫组化重新归档请求异常: " + ihcErr.message, "error");
+        }
+      } else {
+        showToast("已将免疫组化报告标注为【需要重新归档】", "info");
+      }
+    }
+
+    return savedPatient;
+  }
+
+  // Native window.confirm prompt to resolve external Word modifications (forward import or reverse overwrite)
+  let _externalSyncPromptActive = false;
+  async function resolveExternalSyncForPatient(sourceObj, scopeHint = "all", isWriteConflict = false) {
+    if (!sourceObj || _externalSyncPromptActive) return null;
+    const pNo = sourceObj.pathology_no || "";
+    if (!pNo) return null;
+
+    let files = [];
+    if (Array.isArray(sourceObj.modified_files) && sourceObj.modified_files.length) {
+      files = sourceObj.modified_files;
+    } else {
+      const regFiles = Array.isArray(sourceObj.external_modified_files) ? sourceObj.external_modified_files : [];
+      const ihcFiles = Array.isArray(sourceObj.ihc_external_modified_files) ? sourceObj.ihc_external_modified_files : [];
+      if (scopeHint === "ihc") {
+        files = ihcFiles.length ? ihcFiles : regFiles;
+      } else if (scopeHint === "normal") {
+        files = regFiles;
+      } else {
+        files = regFiles.concat(ihcFiles);
+      }
+    }
+    if (!files.length) return null;
+
+    _externalSyncPromptActive = true;
+    try {
+      const primary = sourceObj.primary_source || files[0];
+      const fileLines = files.map(f => `• ${f.label || f.role}: ${f.filename || f.path}`).join("\n");
+      const nameTxt = sourceObj.name ? `${sourceObj.name} (${pNo})` : pNo;
+      const prefixReason = isWriteConflict
+        ? "系统准备写入/保存报告前检测到以下 Word 文件已被外部修改，已自动拦截直接覆盖：\n"
+        : "检测到以下本地 Word 文档已在系统外修改并保存：\n";
+
+      const wantForward = confirm(
+        `⚠️ 【检测到外部 Word 已修改】\n\n` +
+        `患者：${nameTxt}\n` +
+        `${prefixReason}${fileLines}\n\n` +
+        `是否将外部 Word 的最新修改【导入并同步到系统】？\n` +
+        `• 点击【确定】导入外部 Word 修改到系统数据库及同级文档\n` +
+        `• 点击【取消】暂不导入（可选择反写覆盖或保持现状）`
+      );
+
+      if (wantForward) {
+        const res = await fetch(`/api/patients/${encodeURIComponent(pNo)}/sync_from_docx`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "forward",
+            source_role: primary.role,
+            source_path: primary.path
+          })
+        });
+        const syncData = await res.json();
+        if (!syncData.success) {
+          alert("⚠️ 外部 Word 导入失败：\n\n" + (syncData.error || "未知错误"));
+          return { success: false, blocked: true, error: syncData.error };
+        }
+        showToast(syncData.message || "已导入外部 Word 修改！", "success");
+        let syncedP = syncData.patient;
+        syncedP = await promptRearchiveAfterUpdate(syncData, syncedP);
+        refreshAllPatientListsQuietly();
+        return { success: true, action: "forward", patient: syncedP, syncData };
+      }
+
+      const wantReverse = confirm(
+        `⚠️ 【是否按系统数据覆盖外部 Word？】\n\n` +
+        `您刚才取消了“导入外部修改”。\n` +
+        `是否将上述外部修改过的文件移入 Windows 回收站备份，并按系统当前记录重新覆盖生成？\n\n` +
+        `• 点击【确定】移入回收站并反写覆盖外部 Word\n` +
+        `• 点击【取消】${isWriteConflict ? "终止本次写入操作（保留外部 Word 修改）" : "暂不处理，保留当前外部 Word 状态"}`
+      );
+      if (wantReverse) {
+        const revData = await fetchJsonWithSafetyConfirm(`/api/patients/${encodeURIComponent(pNo)}/sync_from_docx`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "reverse",
+            source_role: primary.role,
+            source_path: primary.path
+          })
+        });
+        if (revData && revData.success) {
+          showToast(revData.message || "已按系统数据覆盖外部 Word（旧文件已移入回收站）", "success");
+          refreshAllPatientListsQuietly();
+          return { success: true, action: "reverse", patient: revData.patient };
+        }
+        return { success: false, cancelled: true, error: (revData && revData.error) || "反写覆盖失败" };
+      }
+
+      return { success: false, cancelled: true };
+    } finally {
+      _externalSyncPromptActive = false;
+    }
+  }
+
+  // Unified JSON API fetch with interactive confirmation for permanent-delete fallback, IHC draft overwrite, and external Word conflict
+  async function fetchJsonWithSafetyConfirm(url, options = {}) {
+    let curUrl = url;
+    let curOptions = Object.assign({}, options);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await fetch(curUrl, curOptions);
+      const data = await res.json();
+      if (data && data.success) {
+        return data;
+      }
+      if (data && data.confirm_sync) {
+        const syncOutcome = await resolveExternalSyncForPatient(data, "all", true);
+        if (!syncOutcome || !syncOutcome.success) {
+          return {
+            success: false,
+            cancelled: true,
+            error: (syncOutcome && syncOutcome.error) || "已取消写入，保留外部 Word 修改内容"
+          };
+        }
+        if (syncOutcome.action === "forward") {
+          // For archive calls, user may proceed cleanly with newly imported draft; for text-editing forms, do not overwrite imported fields with stale inputs!
+          const isPureArchive = curUrl.includes("/archive");
+          if (!isPureArchive) {
+            return {
+              success: true,
+              synced_forward: true,
+              patient: syncOutcome.patient,
+              ihc_report: syncOutcome.patient ? syncOutcome.patient.ihc_report : null,
+              message: "已改为导入外部 Word 的最新修改并完成同步（未用旧表单盲目覆盖）！"
+            };
+          }
+        }
+        // Reverse overwrite succeeded (or forward before archive): retry original request once
+        continue;
+      }
+      if (data && data.confirm_permanent) {
+        const okPerm = confirm(
+          "⚠️ 【回收站移入失败 — 防永久删除拦截】\n\n" +
+          (data.error || "无法将旧文件或目标路径移入 Windows 回收站。") +
+          "\n\n点击【确定】将执行永久删除/直接覆盖（不可恢复）；\n点击【取消】立即终止本次操作以保护现有文件。"
+        );
+        if (!okPerm) {
+          return { success: false, cancelled: true, error: "已取消操作（已阻止静默永久删除）" };
+        }
+        const sep = curUrl.includes("?") ? "&" : "?";
+        if (!curUrl.includes("force_permanent=")) {
+          curUrl = curUrl + sep + "force_permanent=1";
+        }
+        if (curOptions.body && typeof curOptions.body === "string") {
+          try {
+            const parsed = JSON.parse(curOptions.body);
+            parsed.force_permanent = true;
+            curOptions = Object.assign({}, curOptions, { body: JSON.stringify(parsed) });
+          } catch (_) {}
+        }
+        continue;
+      }
+      if (data && data.confirm_required) {
+        const okOver = confirm(
+          "⚠️ 【覆盖已有草稿确认】\n\n" +
+          (data.error || "目标文件已存在，是否确定覆盖？")
+        );
+        if (!okOver) {
+          return { success: false, cancelled: true, error: "已取消覆盖操作" };
+        }
+        if (curOptions.body && typeof curOptions.body === "string") {
+          try {
+            const parsed = JSON.parse(curOptions.body);
+            parsed.force_overwrite = true;
+            curOptions = Object.assign({}, curOptions, { body: JSON.stringify(parsed) });
+          } catch (_) {}
+        }
+        continue;
+      }
+      return data;
+    }
+    return { success: false, error: "操作被中止" };
+  }
   const panels = document.querySelectorAll(".workspace-panel");
   const setupWizardModal = document.getElementById("setup-wizard-modal");
   const wizardForm = document.getElementById("wizard-form");
@@ -294,6 +567,13 @@ function startApp() {
       return `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}`;
     }
     return "";
+  }
+
+  function renderExternalModBadge(p, ihcMode = false) {
+    if (!p) return "";
+    const flag = ihcMode ? !!p.ihc_external_modified : !!p.external_modified;
+    if (!flag) return "";
+    return `<span class="badge-status badge-external-mod" title="检测到本地 Word 文档已在外部被修改，点击可选择导入或覆盖">⚠️ Word已外改</span>`;
   }
 
   function renderReviewStatusBadges(p) {
@@ -735,61 +1015,37 @@ function startApp() {
     };
 
     try {
-      let res, data;
+      let data;
       if (state.isEditMode) {
         const oldNo = editOldPathologyNoInput.value.trim();
-        res = await fetch(`/api/patients/${encodeURIComponent(oldNo)}`, {
+        data = await fetchJsonWithSafetyConfirm(`/api/patients/${encodeURIComponent(oldNo)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
       } else {
-        res = await fetch("/api/patients", {
+        const res = await fetch("/api/patients", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
+        data = await res.json();
       }
 
-      data = await res.json();
       if (data.success) {
         showToast(data.message || "操作成功！", "success");
         let savedPatient = data.patient;
 
-        // Requirement 2: Prompt to re-archive if edited patient already had a saved/archived report
-        if (state.isEditMode && data.ask_rearchive && savedPatient) {
-          const wantRearchive = confirm(
-            "患者信息及关联文件（除已归档报告外）已同步更新！\n" +
-            "是否立即重新归档该报告？\n\n" +
-            "点击【确定】立即自动归档；\n" +
-            "点击【取消】标注为【需要重新归档】。"
-          );
-          if (wantRearchive) {
-            try {
-              const archRes = await fetch("/api/reports/archive", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  pathology_no: savedPatient.pathology_no,
-                  source: data.archive_source || "maker"
-                })
-              });
-              const archData = await archRes.json();
-              if (archData.success) {
-                showToast(archData.message || "报告已自动重新归档！", "success");
-                if (archData.duplicate_clinical_photos) {
-                  alert(archData.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，请手动核对归档临床照片！");
-                }
-                if (archData.patient) savedPatient = archData.patient;
-              } else {
-                showToast("重新归档失败: " + (archData.error || "未知错误"), "error");
-              }
-            } catch (archErr) {
-              showToast("重新归档请求异常: " + archErr.message, "error");
-            }
-          } else {
-            showToast("已将报告标注为【需要重新归档】", "info");
-          }
+        if (data.synced_forward) {
+          exitEditMode();
+          resetPatientForm();
+          await loadTodayPatients();
+          if (savedPatient) selectPatient(savedPatient, false);
+          return;
+        }
+
+        if (state.isEditMode && savedPatient) {
+          savedPatient = await promptRearchiveAfterUpdate(data, savedPatient);
         }
 
         const wasEditMode = state.isEditMode;
@@ -935,15 +1191,19 @@ function startApp() {
 
     patients.forEach(p => {
       const item = document.createElement("div");
-      item.className = "patient-item";
+      item.className = `patient-item ${p.external_modified ? "external-modified-card" : ""}`.trim();
       if (state.selectedPatient && state.selectedPatient.pathology_no === p.pathology_no) {
         item.classList.add("selected");
       }
 
+      const extBadge = renderExternalModBadge(p, false);
       item.innerHTML = `
         <div class="patient-item-header">
           <span class="patient-name-box">${p.name}</span>
-          <span class="patient-pathology-badge">${p.pathology_no}</span>
+          <span style="display: inline-flex; gap: 4px; align-items: center;">
+            ${extBadge}
+            <span class="patient-pathology-badge">${p.pathology_no}</span>
+          </span>
         </div>
         <div class="patient-meta">
           <span>${p.gender || "-"} / ${formatAgeDisplay(p.age)}</span>
@@ -956,7 +1216,7 @@ function startApp() {
       `;
 
       item.addEventListener("click", () => {
-        selectPatient(p);
+        selectPatient(p, true);
       });
 
       todayPatientList.appendChild(item);
@@ -964,14 +1224,24 @@ function startApp() {
   }
 
   // ================= Select Patient & Detail Actions =================
-  function selectPatient(patient) {
-    state.selectedPatient = patient;
+  async function selectPatient(patient, fromUserClick = false) {
+    let effPatient = patient;
+    if (fromUserClick && effPatient && effPatient.external_modified) {
+      const outcome = await resolveExternalSyncForPatient(effPatient, "normal", false);
+      if (outcome && outcome.success && outcome.patient) {
+        effPatient = outcome.patient;
+        if (state.isEditMode && editOldPathologyNoInput.value.trim() === effPatient.pathology_no) {
+          enterEditMode(effPatient);
+        }
+      }
+    }
+    state.selectedPatient = effPatient;
 
     // Highlight item in today's list
     const items = todayPatientList.querySelectorAll(".patient-item");
     items.forEach(el => {
       const badge = el.querySelector(".patient-pathology-badge");
-      if (badge && badge.textContent === patient.pathology_no) {
+      if (badge && badge.textContent === effPatient.pathology_no) {
         el.classList.add("selected");
       } else {
         el.classList.remove("selected");
@@ -979,14 +1249,14 @@ function startApp() {
     });
 
     selectedPatientBox.style.display = "block";
-    selectedPatientTitle.textContent = `${patient.name} (${patient.pathology_no})`;
-    selectedPatientDiagBadge.textContent = patient.clinical_diagnosis || "无诊断";
+    selectedPatientTitle.textContent = `${effPatient.name} (${effPatient.pathology_no})`;
+    selectedPatientDiagBadge.textContent = effPatient.clinical_diagnosis || "无诊断";
 
-    selectedWordPath.textContent = `Word报告: ${patient.word_path || "-"}`;
-    selectedWordPath.title = patient.word_path || "";
+    selectedWordPath.textContent = `Word报告: ${effPatient.word_path || "-"}`;
+    selectedWordPath.title = effPatient.word_path || "";
 
-    selectedPhotoPath.textContent = `照片目录: ${patient.photo_dir || "-"}`;
-    selectedPhotoPath.title = patient.photo_dir || "";
+    selectedPhotoPath.textContent = `照片目录: ${effPatient.photo_dir || "-"}`;
+    selectedPhotoPath.title = effPatient.photo_dir || "";
   }
 
   // Copy Path buttons
@@ -1050,9 +1320,14 @@ function startApp() {
   }
 
   // Edit Selected Patient
-  btnEditSelected.addEventListener("click", () => {
+  btnEditSelected.addEventListener("click", async () => {
     if (state.selectedPatient) {
-      enterEditMode(state.selectedPatient);
+      let targetP = state.selectedPatient;
+      if (targetP.external_modified) {
+        const outcome = await resolveExternalSyncForPatient(targetP, "normal", false);
+        if (outcome && outcome.success && outcome.patient) targetP = outcome.patient;
+      }
+      enterEditMode(targetP);
     }
   });
 
@@ -1072,8 +1347,18 @@ function startApp() {
       const url = kind === "ihc"
         ? `/api/ihc/${encodeURIComponent(pathologyNo)}/preview`
         : `/api/patients/${encodeURIComponent(pathologyNo)}/preview`;
-      const res = await fetch(url);
-      const data = await res.json();
+      let res = await fetch(url);
+      let data = await res.json();
+      if (data.success && data.patient) {
+        const hasExt = (kind === "ihc") ? !!data.patient.ihc_external_modified : !!data.patient.external_modified;
+        if (hasExt) {
+          const outcome = await resolveExternalSyncForPatient(data.patient, kind === "ihc" ? "ihc" : "normal", false);
+          if (outcome && outcome.success) {
+            res = await fetch(url);
+            data = await res.json();
+          }
+        }
+      }
       if (data.success) {
         const reportPath = data.doc_path || data.patient.final_report_path || data.patient.word_path;
         modalPreviewFilename.textContent = reportPath ? reportPath.split(/[\\/]/).pop() : `${data.patient.pathology_no}_${data.patient.name}.docx`;
@@ -1209,6 +1494,9 @@ function startApp() {
       } else if (!statusHtml) {
         statusHtml = `<span style="color: var(--text-muted); font-size: 11px;">未归档</span>`;
       }
+      if (p.external_modified || p.ihc_external_modified) {
+        statusHtml += ` <span class="badge-status badge-external-mod" title="检测到磁盘 Word 已在外部修改">⚠️ Word已外改</span>`;
+      }
 
       tr.innerHTML = `
         <td style="font-weight: 600; font-family: monospace; color: var(--primary);">${p.pathology_no}</td>
@@ -1233,18 +1521,18 @@ function startApp() {
       `;
 
       // 1. Edit basic patient info
-      tr.querySelector(".btn-tbl-edit").addEventListener("click", () => {
+      tr.querySelector(".btn-tbl-edit").addEventListener("click", async () => {
         tabs.forEach(t => t.classList.toggle("active", t.dataset.tab === "tab-entry"));
         panels.forEach(pan => pan.classList.toggle("active", pan.id === "tab-entry"));
-        selectPatient(p);
-        enterEditMode(p);
+        await selectPatient(p, true);
+        enterEditMode(state.selectedPatient || p);
       });
 
       // 2. Open in Report Making
       tr.querySelector(".btn-tbl-making").addEventListener("click", () => {
         tabs.forEach(t => t.classList.toggle("active", t.dataset.tab === "tab-making"));
         panels.forEach(pan => pan.classList.toggle("active", pan.id === "tab-making"));
-        selectMakingPatient(p, true);
+        selectMakingPatient(p, true, true);
       });
 
       // 3. Preview Word
@@ -1389,12 +1677,11 @@ function startApp() {
         review_status: statusModalReview.value,
         archived: parseInt(statusModalArchived.value) || 0
       };
-      const res = await fetch(`/api/patients/${encodeURIComponent(activeStatusPatient.pathology_no)}/status`, {
+      const data = await fetchJsonWithSafetyConfirm(`/api/patients/${encodeURIComponent(activeStatusPatient.pathology_no)}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
       if (data.success) {
         showToast(data.message, "success");
         statusChangeModal.style.display = "none";
@@ -1437,10 +1724,9 @@ function startApp() {
     btnConfirmDeleteModal.innerHTML = `<span>⏳ 正在彻底删除...</span>`;
 
     try {
-      const res = await fetch(`/api/patients/${encodeURIComponent(activeDeletePatient.pathology_no)}`, {
+      const data = await fetchJsonWithSafetyConfirm(`/api/patients/${encodeURIComponent(activeDeletePatient.pathology_no)}`, {
         method: "DELETE"
       });
-      const data = await res.json();
       if (data.success) {
         showToast(data.message, "success");
         deletePatientModal.style.display = "none";
@@ -1585,7 +1871,7 @@ function startApp() {
       const card = document.createElement("div");
       const isSelected = makingState.selectedPatient && makingState.selectedPatient.pathology_no === p.pathology_no;
       const statusFillClass = getMakingCardStatusClass(p);
-      card.className = `patient-list-item ${statusFillClass} ${isSelected ? "selected" : ""}`.trim();
+      card.className = `patient-list-item ${statusFillClass} ${p.external_modified ? "external-modified-card" : ""} ${isSelected ? "selected" : ""}`.trim();
 
       const isApprovedArchived = (p.review_status === "完成审核" && p.archived === 1);
       const isApprovedUnarchived = (p.review_status === "完成审核" && p.archived !== 1);
@@ -1603,6 +1889,7 @@ function startApp() {
       } else if (p.final_report_path && !statusBadge) {
         archBadge = `<span class="badge-status badge-saved">已保存</span>`;
       }
+      const extModBadge = renderExternalModBadge(p, false);
 
       const diagText = p.pathology_diag || p.clinical_diagnosis || "未诊断";
       card.innerHTML = `
@@ -1616,12 +1903,12 @@ function startApp() {
         </div>
         <div class="patient-item-body">
           <div class="patient-item-diag" title="${diagText}">${diagText}</div>
-          ${(statusBadge || archBadge) ? `<div class="patient-item-badges">${statusBadge}${archBadge}</div>` : ""}
+          ${(statusBadge || archBadge || extModBadge) ? `<div class="patient-item-badges">${extModBadge}${statusBadge}${archBadge}</div>` : ""}
         </div>
       `;
 
       card.addEventListener("click", () => {
-        selectMakingPatient(p, true);
+        selectMakingPatient(p, true, true);
       });
 
       makingPatientList.appendChild(card);
@@ -1629,15 +1916,22 @@ function startApp() {
   }
 
   // Select patient to edit in Report Making
-  async function selectMakingPatient(patient, reloadPhotos = true) {
-    makingState.selectedPatient = patient;
+  async function selectMakingPatient(patient, reloadPhotos = true, fromUserClick = false) {
+    let effPatient = patient;
+    if (fromUserClick && effPatient && effPatient.external_modified) {
+      const outcome = await resolveExternalSyncForPatient(effPatient, "normal", false);
+      if (outcome && outcome.success && outcome.patient) {
+        effPatient = outcome.patient;
+      }
+    }
+    makingState.selectedPatient = effPatient;
     makingEmptyHint.style.display = "none";
     makingEditorPanel.style.display = "flex";
 
     // Update list selection highlight
     document.querySelectorAll("#making-patient-list .patient-list-item").forEach(el => {
       const noEl = el.querySelector(".patient-item-no");
-      if (noEl && noEl.textContent.trim() === patient.pathology_no) {
+      if (noEl && noEl.textContent.trim() === effPatient.pathology_no) {
         el.classList.add("selected");
       } else {
         el.classList.remove("selected");
@@ -1645,28 +1939,28 @@ function startApp() {
     });
 
     // Populate banner
-    mkBadgeName.textContent = patient.name;
-    mkBadgeNo.textContent = patient.pathology_no;
-    const ageStr = patient.age ? formatAgeDisplay(patient.age) : "";
-    mkBadgeInfo.textContent = `${patient.gender || ""} · ${ageStr}`;
-    mkBadgeDiag.textContent = `临床诊断: ${patient.clinical_diagnosis || "无"}`;
+    mkBadgeName.textContent = effPatient.name;
+    mkBadgeNo.textContent = effPatient.pathology_no;
+    const ageStr = effPatient.age ? formatAgeDisplay(effPatient.age) : "";
+    mkBadgeInfo.textContent = `${effPatient.gender || ""} · ${ageStr}`;
+    mkBadgeDiag.textContent = `临床诊断: ${effPatient.clinical_diagnosis || "无"}`;
 
     // Status checkboxes
-    const revStr = String(patient.review_status || "");
-    mkIsPendingReview.checked = patient.is_pending_review === 1 || revStr.includes("待审核");
-    mkIsNeedsIhc.checked = patient.is_needs_ihc === 1 || revStr.includes("免疫组化");
+    const revStr = String(effPatient.review_status || "");
+    mkIsPendingReview.checked = effPatient.is_pending_review === 1 || revStr.includes("待审核");
+    mkIsNeedsIhc.checked = effPatient.is_needs_ihc === 1 || revStr.includes("免疫组化");
     if (mkIsNeedsRecut) {
-      mkIsNeedsRecut.checked = patient.is_needs_recut === 1 || revStr.includes("重切");
+      mkIsNeedsRecut.checked = effPatient.is_needs_recut === 1 || revStr.includes("重切");
     }
 
     // Text fields
-    mkMicroscopicDesc.value = patient.microscopic_desc || "";
-    mkPathologyDiag.value = patient.pathology_diag || "";
+    mkMicroscopicDesc.value = effPatient.microscopic_desc || "";
+    mkPathologyDiag.value = effPatient.pathology_diag || "";
     mkSaveStatus.textContent = "就绪";
     mkSaveStatus.style.color = "var(--text-muted)";
 
     if (reloadPhotos) {
-      await fetchPatientPhotosAndSetupSlots(patient);
+      await fetchPatientPhotosAndSetupSlots(effPatient);
     }
   }
 
@@ -2012,12 +2306,11 @@ function startApp() {
     btnMkSaveReport.innerHTML = `<span>⏳ 保存中...</span>`;
 
     try {
-      const res = await fetch("/api/reports/save", {
+      const data = await fetchJsonWithSafetyConfirm("/api/reports/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
 
       if (data.success) {
         showToast(data.message, "success");
@@ -2025,7 +2318,12 @@ function startApp() {
           alert(data.duplicate_prompt || "【提示】该患者在临床照片母目录中匹配到多个重名文件夹，无法自动归档临床照片！\n已在资源管理器中同时打开【临床照片母目录】和【特殊归档目标目录】，请操作者手动筛选并将正确的照片文件夹归档复制。");
         }
         makingState.selectedPatient = data.patient;
-        mkSaveStatus.textContent = `已保存并输出 (${new Date().toLocaleTimeString()})`;
+        if (data.synced_forward && data.patient) {
+          await selectMakingPatient(data.patient, true, false);
+        }
+        mkSaveStatus.textContent = data.synced_forward
+          ? `已导入外部Word修改 (${new Date().toLocaleTimeString()})`
+          : `已保存并输出 (${new Date().toLocaleTimeString()})`;
         mkSaveStatus.style.color = "var(--success)";
         loadMakingPatients();
       } else {
@@ -2058,12 +2356,11 @@ function startApp() {
     btnMkArchiveReport.innerHTML = `<span>⏳ 归档中...</span>`;
 
     try {
-      const res = await fetch("/api/reports/archive", {
+      const data = await fetchJsonWithSafetyConfirm("/api/reports/archive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pathology_no: p.pathology_no, source: isApproved ? "review" : "maker" })
       });
-      const data = await res.json();
 
       if (data.success) {
         showToast(`患者 [${p.name}] 报告归档成功！已保存至【已归档报告】。`, "success");
@@ -2152,14 +2449,21 @@ function startApp() {
     btnMkPrintReport.innerHTML = `<span>⏳ 正在保存并准备打印...</span>`;
 
     try {
-      const res = await fetch("/api/reports/print", {
+      const data = await fetchJsonWithSafetyConfirm("/api/reports/print", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
       if (data.success) {
         makingState.selectedPatient = data.patient;
+        if (data.synced_forward && data.patient) {
+          await selectMakingPatient(data.patient, true, false);
+          mkSaveStatus.textContent = `已导入外部Word修改 (${new Date().toLocaleTimeString()})`;
+          mkSaveStatus.style.color = "var(--success)";
+          showToast(data.message, "success");
+          loadMakingPatients();
+          return;
+        }
         mkSaveStatus.textContent = `已保存并打印 (${new Date().toLocaleTimeString()})`;
         mkSaveStatus.style.color = "var(--success)";
         loadMakingPatients();
@@ -2233,12 +2537,11 @@ function startApp() {
         if (!ok) return;
 
         btnMakingBatchArchiveToday.innerHTML = `<span>⏳ 正在批量归档 ${cands.length} 份...</span>`;
-        const res = await fetch("/api/reports/batch_archive_today", {
+        const data = await fetchJsonWithSafetyConfirm("/api/reports/batch_archive_today", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({})
         });
-        const data = await res.json();
         if (data.success) {
           showToast(data.message, data.failed_count ? "info" : "success");
         } else {
@@ -2395,9 +2698,9 @@ function startApp() {
       const card = document.createElement("div");
       const isSelected = reviewState.selectedPatient && reviewState.selectedPatient.pathology_no === p.pathology_no;
       const statusFillClass = getMakingCardStatusClass(p);
-      card.className = `patient-list-item ${statusFillClass} ${isSelected ? "selected" : ""}`.trim();
+      card.className = `patient-list-item ${statusFillClass} ${p.external_modified ? "external-modified-card" : ""} ${isSelected ? "selected" : ""}`.trim();
 
-      const badgeHtml = renderReviewStatusBadges(p);
+      const badgeHtml = `${renderExternalModBadge(p, false)}${renderReviewStatusBadges(p)}`;
 
       card.innerHTML = `
         <div class="patient-item-header">
@@ -2411,7 +2714,7 @@ function startApp() {
       `;
 
       card.addEventListener("click", () => {
-        selectReviewPatient(p, true);
+        selectReviewPatient(p, true, true);
       });
 
       reviewPatientList.appendChild(card);
@@ -2419,33 +2722,40 @@ function startApp() {
   }
 
   // Select patient in Review Workspace
-  async function selectReviewPatient(patient, reloadPhotos = true) {
-    reviewState.selectedPatient = patient;
+  async function selectReviewPatient(patient, reloadPhotos = true, fromUserClick = false) {
+    let effPatient = patient;
+    if (fromUserClick && effPatient && effPatient.external_modified) {
+      const outcome = await resolveExternalSyncForPatient(effPatient, "normal", false);
+      if (outcome && outcome.success && outcome.patient) {
+        effPatient = outcome.patient;
+      }
+    }
+    reviewState.selectedPatient = effPatient;
     reviewEmptyHint.style.display = "none";
     reviewEditorPanel.style.display = "flex";
 
     document.querySelectorAll("#review-patient-list .patient-list-item").forEach(el => {
       const noEl = el.querySelector(".patient-item-no");
-      if (noEl && noEl.textContent.trim() === patient.pathology_no) {
+      if (noEl && noEl.textContent.trim() === effPatient.pathology_no) {
         el.classList.add("selected");
       } else {
         el.classList.remove("selected");
       }
     });
 
-    revBadgeName.textContent = patient.name;
-    revBadgeNo.textContent = patient.pathology_no;
-    revBadgeStatus.textContent = patient.review_status || "待审核";
-    revBadgeDiag.textContent = `诊断: ${patient.pathology_diag || patient.clinical_diagnosis || "未诊断"}`;
+    revBadgeName.textContent = effPatient.name;
+    revBadgeNo.textContent = effPatient.pathology_no;
+    revBadgeStatus.textContent = effPatient.review_status || "待审核";
+    revBadgeDiag.textContent = `诊断: ${effPatient.pathology_diag || effPatient.clinical_diagnosis || "未诊断"}`;
 
     // Doctor & date overrides (Requirement 2.9 & 3.1)
-    revReportDoc.value = patient.report_doctor || state.config.report_doctor || "张医生";
-    revReviewDoc.value = patient.review_doctor || state.config.review_doctor || "李主任";
-    revReportDate.value = toIsoDateString(patient.report_date_raw || patient.report_date);
+    revReportDoc.value = effPatient.report_doctor || state.config.report_doctor || "张医生";
+    revReviewDoc.value = effPatient.review_doctor || state.config.review_doctor || "李主任";
+    revReportDate.value = toIsoDateString(effPatient.report_date_raw || effPatient.report_date);
 
-    revMicroscopicDesc.value = patient.microscopic_desc || "";
-    revPathologyDiag.value = patient.pathology_diag || "";
-    if (patient.archived === 2) {
+    revMicroscopicDesc.value = effPatient.microscopic_desc || "";
+    revPathologyDiag.value = effPatient.pathology_diag || "";
+    if (effPatient.archived === 2) {
       revSaveStatus.textContent = "已同步草稿，请至【报告制作】重新归档";
       revSaveStatus.style.color = "var(--warning)";
     } else {
@@ -2453,7 +2763,7 @@ function startApp() {
       revSaveStatus.style.color = "var(--text-muted)";
     }
 
-    const copiedPhotoDir = patient.review_photo_dir || patient.photo_dir || "";
+    const copiedPhotoDir = effPatient.review_photo_dir || effPatient.photo_dir || "";
     reviewState.reviewPhotoDir = copiedPhotoDir;
     if (revPhotoPathBox && revPhotoPathText) {
       if (copiedPhotoDir) {
@@ -2466,7 +2776,7 @@ function startApp() {
     }
 
     if (reloadPhotos) {
-      await fetchReviewPhotosAndSlots(patient);
+      await fetchReviewPhotosAndSlots(effPatient);
     }
   }
 
@@ -2670,16 +2980,18 @@ function startApp() {
     btnRevSaveOverwrite.innerHTML = `<span>⏳ 保存并同步覆盖中...</span>`;
 
     try {
-      const res = await fetch("/api/reviews/save", {
+      const data = await fetchJsonWithSafetyConfirm("/api/reviews/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
 
       if (data.success) {
         showToast(data.message || "审核内容已保存，并已同步两份草稿文件！", "success");
-        applyReviewSaveResponseToUi(data, "已同步草稿");
+        if (data.synced_forward && data.patient) {
+          await selectReviewPatient(data.patient, true, false);
+        }
+        applyReviewSaveResponseToUi(data, data.synced_forward ? "已导入外部修改" : "已同步草稿");
       } else {
         showToast("保存失败: " + data.error, "error");
       }
@@ -2701,13 +3013,18 @@ function startApp() {
       btnRevPrintReport.innerHTML = `<span>⏳ 正在保存并准备打印...</span>`;
 
       try {
-        const res = await fetch("/api/reviews/print", {
+        const data = await fetchJsonWithSafetyConfirm("/api/reviews/print", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
-        const data = await res.json();
         if (data.success) {
+          if (data.synced_forward && data.patient) {
+            await selectReviewPatient(data.patient, true, false);
+            applyReviewSaveResponseToUi(data, "已导入外部修改");
+            showToast(data.message, "success");
+            return;
+          }
           applyReviewSaveResponseToUi(data, "已保存并打印");
           if (data.direct_printed) {
             showToast("审核报告已保存，已调用Word发送第1页至默认打印机！", "success");
@@ -2987,8 +3304,9 @@ function startApp() {
       let origArchBadge = p.archived === 0
         ? `<span class="badge-status badge-recut">原报告未归档</span>`
         : "";
+      const ihcExtBadge = renderExternalModBadge(p, true);
 
-      card.className = `patient-list-item ${fillClass} ${isSelected ? "selected" : ""}`.trim();
+      card.className = `patient-list-item ${fillClass} ${p.ihc_external_modified ? "external-modified-card" : ""} ${isSelected ? "selected" : ""}`.trim();
       const diagText = (ihc.ihc_created && ihc.pathology_diag) ? ihc.pathology_diag : (p.pathology_diag || p.clinical_diagnosis || "未诊断");
 
       card.innerHTML = `
@@ -3002,48 +3320,55 @@ function startApp() {
         </div>
         <div class="patient-item-body">
           <div class="patient-item-diag" title="${diagText}">${diagText}</div>
-          <div class="patient-item-badges">${statusBadge}${origArchBadge}</div>
+          <div class="patient-item-badges">${ihcExtBadge}${statusBadge}${origArchBadge}</div>
         </div>
       `;
 
       card.addEventListener("click", () => {
-        selectIhcPatient(p, true);
+        selectIhcPatient(p, true, true);
       });
 
       ihcPatientList.appendChild(card);
     });
   }
 
-  async function selectIhcPatient(patient, reloadPhotos = true) {
-    ihcState.selectedPatient = patient;
+  async function selectIhcPatient(patient, reloadPhotos = true, fromUserClick = false) {
+    let effPatient = patient;
+    if (fromUserClick && effPatient && effPatient.ihc_external_modified) {
+      const outcome = await resolveExternalSyncForPatient(effPatient, "ihc", false);
+      if (outcome && outcome.success && outcome.patient) {
+        effPatient = outcome.patient;
+      }
+    }
+    ihcState.selectedPatient = effPatient;
     ihcState.hasUnsavedChanges = false;
     ihcEmptyHint.style.display = "none";
     ihcEditorPanel.style.display = "flex";
 
     document.querySelectorAll("#ihc-patient-list .patient-list-item").forEach(el => {
       const noEl = el.querySelector(".patient-item-no");
-      if (noEl && noEl.textContent.trim() === patient.pathology_no) {
+      if (noEl && noEl.textContent.trim() === effPatient.pathology_no) {
         el.classList.add("selected");
       } else {
         el.classList.remove("selected");
       }
     });
 
-    const ihc = patient.ihc_report || {};
+    const ihc = effPatient.ihc_report || {};
     const created = !!ihc.ihc_created;
 
-    ihcBadgeName.textContent = patient.name;
-    ihcBadgeNo.textContent = patient.pathology_no;
+    ihcBadgeName.textContent = effPatient.name;
+    ihcBadgeNo.textContent = effPatient.pathology_no;
 
     if (!created) {
       ihcBadgeStatus.textContent = "未创建免疫组化报告";
-      ihcBadgeDiag.textContent = `原诊断: ${patient.pathology_diag || patient.clinical_diagnosis || "未诊断"}`;
+      ihcBadgeDiag.textContent = `原诊断: ${effPatient.pathology_diag || effPatient.clinical_diagnosis || "未诊断"}`;
       btnIhcCreate.innerHTML = `<span>🧪 创建免疫组化报告</span>`;
       ihcNotCreatedBanner.style.display = "flex";
       ihcPhotoPathBox.style.display = "none";
       ihcPhotoPathText.textContent = "-";
       ihcPhotoPathText.title = "";
-      if (patient.archived === 0) {
+      if (effPatient.archived === 0) {
         ihcNotCreatedTitle.textContent = "⚠️ 原报告尚未归档，无法创建免疫组化报告";
         ihcNotCreatedDesc.textContent = "请先在【报告制作】（或【报告审核】）完成原报告归档至“已归档报告”后，再点击【创建免疫组化报告】。";
       } else {
@@ -3051,9 +3376,9 @@ function startApp() {
         ihcNotCreatedDesc.textContent = "请点击【创建免疫组化报告】，系统将复制该患者“已归档报告”及病理照片目录至“特殊患者归档\\免疫组化”中（不复制临床照片）。";
       }
 
-      ihcReportDoc.value = patient.report_doctor || state.config.report_doctor || "张医生";
-      ihcReviewDoc.value = patient.review_doctor || state.config.review_doctor || "李主任";
-      ihcReportDate.value = toIsoDateString(patient.report_date_raw || patient.report_date);
+      ihcReportDoc.value = effPatient.report_doctor || state.config.report_doctor || "张医生";
+      ihcReviewDoc.value = effPatient.review_doctor || state.config.review_doctor || "李主任";
+      ihcReportDate.value = toIsoDateString(effPatient.report_date_raw || effPatient.report_date);
       ihcMicroscopicDesc.value = "";
       ihcPathologyDiag.value = "";
       ihcState.photos = [];
@@ -3071,16 +3396,16 @@ function startApp() {
     }
 
     ihcBadgeStatus.textContent = ihc.archived === 1 ? "免疫组化已归档" : (ihc.archived === 2 ? "免疫组化需重归" : "免疫组化草稿");
-    ihcBadgeDiag.textContent = `诊断: ${ihc.pathology_diag || patient.pathology_diag || "未诊断"}`;
+    ihcBadgeDiag.textContent = `诊断: ${ihc.pathology_diag || effPatient.pathology_diag || "未诊断"}`;
     btnIhcCreate.innerHTML = `<span>🔄 重建免疫组化报告</span>`;
     ihcNotCreatedBanner.style.display = "none";
     ihcPhotoPathBox.style.display = "flex";
     ihcPhotoPathText.textContent = ihc.ihc_photo_dir || "-";
     ihcPhotoPathText.title = ihc.ihc_photo_dir || "";
 
-    ihcReportDoc.value = ihc.report_doctor || patient.report_doctor || state.config.report_doctor || "张医生";
-    ihcReviewDoc.value = ihc.review_doctor || patient.review_doctor || state.config.review_doctor || "李主任";
-    ihcReportDate.value = toIsoDateString(ihc.report_date_raw || ihc.report_date || patient.report_date_raw || patient.report_date);
+    ihcReportDoc.value = ihc.report_doctor || effPatient.report_doctor || state.config.report_doctor || "张医生";
+    ihcReviewDoc.value = ihc.review_doctor || effPatient.review_doctor || state.config.review_doctor || "李主任";
+    ihcReportDate.value = toIsoDateString(ihc.report_date_raw || ihc.report_date || effPatient.report_date_raw || effPatient.report_date);
     ihcMicroscopicDesc.value = ihc.microscopic_desc || "";
     ihcPathologyDiag.value = ihc.pathology_diag || "";
 
@@ -3285,20 +3610,21 @@ function startApp() {
     if (!ihcState.selectedPatient) return;
     const p = ihcState.selectedPatient;
     const ihc = p.ihc_report || {};
+    let forceOverwrite = false;
     if (ihc.ihc_created) {
-      if (!confirm("该患者已存在免疫组化报告草稿，重新创建将用【已归档报告】重新覆盖免疫组化目录中的报告文档（已录入的照片文件将保留），确定继续吗？")) {
+      if (!confirm("该患者已存在免疫组化报告草稿，重新创建将用【已归档报告】重新覆盖免疫组化目录中的报告文档（旧草稿将提前备份至回收站，已录入的照片文件将保留），确定继续吗？")) {
         return;
       }
+      forceOverwrite = true;
     }
 
     btnIhcCreate.disabled = true;
     try {
-      const res = await fetch("/api/ihc/create", {
+      const data = await fetchJsonWithSafetyConfirm("/api/ihc/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pathology_no: p.pathology_no })
+        body: JSON.stringify({ pathology_no: p.pathology_no, force_overwrite: forceOverwrite })
       });
-      const data = await res.json();
       if (data.success) {
         showToast(data.message, "success");
         ihcState.selectedPatient = data.patient;
@@ -3338,17 +3664,21 @@ function startApp() {
     btnIhcSave.disabled = true;
     btnIhcSave.innerHTML = `<span>⏳ 保存中...</span>`;
     try {
-      const res = await fetch("/api/ihc/save", {
+      const data = await fetchJsonWithSafetyConfirm("/api/ihc/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
       if (data.success) {
         showToast(data.message, "success");
         ihcState.selectedPatient = data.patient;
+        if (data.synced_forward && data.patient) {
+          await selectIhcPatient(data.patient, true, false);
+        }
         ihcState.hasUnsavedChanges = false;
-        ihcSaveStatus.textContent = `已独立保存 (${new Date().toLocaleTimeString()})`;
+        ihcSaveStatus.textContent = data.synced_forward
+          ? `已导入外部Word修改 (${new Date().toLocaleTimeString()})`
+          : `已独立保存 (${new Date().toLocaleTimeString()})`;
         ihcSaveStatus.style.color = "var(--success)";
         loadIhcPatients();
         return true;
@@ -3378,12 +3708,11 @@ function startApp() {
 
     if (btnIhcDelete) btnIhcDelete.disabled = true;
     try {
-      const res = await fetch("/api/ihc/delete", {
+      const data = await fetchJsonWithSafetyConfirm("/api/ihc/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pathology_no: p.pathology_no })
       });
-      const data = await res.json();
       if (data.success) {
         showToast(data.message || "已删除免疫组化报告并恢复为普通报告", "success");
         ihcState.selectedPatient = null;
@@ -3493,12 +3822,11 @@ function startApp() {
     btnIhcArchive.disabled = true;
     btnIhcArchive.innerHTML = `<span>⏳ 归档中...</span>`;
     try {
-      const res = await fetch("/api/ihc/archive", {
+      const data = await fetchJsonWithSafetyConfirm("/api/ihc/archive", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pathology_no: p.pathology_no })
       });
-      const data = await res.json();
       if (data.success) {
         showToast(data.message, "success");
         ihcState.selectedPatient = data.patient;
@@ -3869,7 +4197,8 @@ function startApp() {
     container.innerHTML = "";
     patients.forEach(p => {
       const card = document.createElement("div");
-      card.className = "output-item-card";
+      const hasOutExtMod = isIhc ? !!p.ihc_external_modified : !!p.external_modified;
+      card.className = `output-item-card ${hasOutExtMod ? "external-modified-card" : ""}`.trim();
 
       const ageStr = formatAgeDisplay(p.age);
       const diagStr = p.pathology_diag || p.clinical_diagnosis || "未诊断";
@@ -3887,6 +4216,9 @@ function startApp() {
         if (p.is_needs_ihc === 1) {
           statusBadge += ` <span class="badge-status badge-ihc" style="font-size: 11px;">免疫组化</span>`;
         }
+      }
+      if (hasOutExtMod) {
+        statusBadge += ` ${renderExternalModBadge(p, isIhc)}`;
       }
 
       card.innerHTML = `
@@ -3955,6 +4287,9 @@ function startApp() {
 
       // 4. Print Page 1
       card.querySelector(".btn-out-print").addEventListener("click", async () => {
+        if (hasOutExtMod) {
+          await resolveExternalSyncForPatient(p, isIhc ? "ihc" : "normal", false);
+        }
         const btnPrint = card.querySelector(".btn-out-print");
         btnPrint.disabled = true;
         btnPrint.innerHTML = `<span>⏳ 打印中...</span>`;
@@ -3991,12 +4326,11 @@ function startApp() {
           return;
         }
         try {
-          const res = await fetch("/api/output/revoke_archive", {
+          const data = await fetchJsonWithSafetyConfirm("/api/output/revoke_archive", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ pathology_no: p.pathology_no, report_type: reportType })
           });
-          const data = await res.json();
           if (data.success) {
             showToast(data.message, "success");
             if (isSpecial) loadOutputSpecialPatients();
@@ -4018,12 +4352,11 @@ function startApp() {
             return;
           }
           try {
-            const res = await fetch("/api/output/revoke_approval", {
+            const data = await fetchJsonWithSafetyConfirm("/api/output/revoke_approval", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ pathology_no: p.pathology_no })
             });
-            const data = await res.json();
             if (data.success) {
               showToast(data.message, "success");
               loadOutputSpecialPatients();
@@ -4311,7 +4644,7 @@ function startApp() {
     btnSigningGenerate.innerHTML = `<span>⏳ 正在生成签名单 (Excel + Word)...</span>`;
 
     try {
-      const res = await fetch("/api/signing/generate", {
+      const data = await fetchJsonWithSafetyConfirm("/api/signing/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -4322,7 +4655,6 @@ function startApp() {
           report_end_date: signingReportEndDate ? signingReportEndDate.value : ""
         })
       });
-      const data = await res.json();
 
       if (data.success) {
         showToast(data.message, "success");

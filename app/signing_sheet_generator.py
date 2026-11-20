@@ -16,6 +16,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
+from app.path_manager import backup_before_overwrite
 
 SURGERY_DATE_NOTICE = "本手术日期仅供参考，若本页未找到可在相近日期的页面中寻找"
 
@@ -203,13 +204,7 @@ def generate_signing_sheet_excel(work_dir, patients, start_date=None, end_date=N
     ws.page_setup.fitToHeight = 0
 
     if os.path.exists(out_path):
-        try:
-            with open(out_path, "a+b"):
-                pass
-        except (PermissionError, IOError) as pe:
-            raise PermissionError(
-                f"签名单 Excel 文件被其他软件（如 Excel 或 WPS）打开占用，无法写入！请先关闭该文件后重试生成。路径: {os.path.basename(out_path)}"
-            ) from pe
+        backup_before_overwrite(out_path, lock_label="签名单 Excel 文件")
 
     try:
         wb.save(out_path)
@@ -385,13 +380,7 @@ def generate_signing_sheet_word(work_dir, patients, start_date=None, end_date=No
     _set_doc_run_font(p_foot.add_run("经手人：____________            发放日期：______年____月____日"), "宋体", 10.5)
 
     if os.path.exists(out_path):
-        try:
-            with open(out_path, "a+b"):
-                pass
-        except (PermissionError, IOError) as pe:
-            raise PermissionError(
-                f"签名单 Word 文件被其他软件（如 Word 或 WPS）打开占用，无法写入！请先关闭该文件后重试生成。路径: {os.path.basename(out_path)}"
-            ) from pe
+        backup_before_overwrite(out_path, lock_label="签名单 Word 文件")
 
     try:
         doc.save(out_path)

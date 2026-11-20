@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS patients (
     archived INTEGER DEFAULT 0,
     archive_dir TEXT DEFAULT '',
     clinical_photo_dir TEXT DEFAULT '',
+    doc_sync_meta TEXT DEFAULT '{}',
     created_at TEXT DEFAULT '',
     updated_at TEXT DEFAULT ''
 );
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS ihc_reports (
     biopsy_sites TEXT DEFAULT '[]',
     archived INTEGER DEFAULT 0,
     archive_file TEXT DEFAULT '',
+    doc_sync_meta TEXT DEFAULT '{}',
     created_at TEXT DEFAULT '',
     updated_at TEXT DEFAULT ''
 );
@@ -97,8 +99,80 @@ def get_connection(db_path, timeout=15.0):
         pass
     return conn
 
+def backup_database(db_path, reason="daily", max_backups=20):
+    """
+    Create a hot SQLite snapshot inside 工作目录/数据库/backups/ using sqlite3.Connection.backup()
+    (safe under WAL mode) and rotate older snapshots beyond max_backups using safe_delete_path().
+    - reason == 'daily': creates pathology_YYYYMMDD.db once per calendar day if missing.
+    - other reasons (e.g. 'pre_delete_<no>'): creates timestamped pathology_YYYYMMDD_HHMMSS_<reason>.db.
+    """
+    if not db_path or not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+        return None
+
+    from app.path_manager import safe_delete_path, sanitize_filename, RecycleBinFailedError
+
+    db_dir = os.path.dirname(os.path.abspath(db_path))
+    backup_dir = os.path.join(db_dir, "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+
+    now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    if reason == "daily":
+        backup_path = os.path.join(backup_dir, f"pathology_{date_str}.db")
+        if os.path.exists(backup_path):
+            return backup_path
+    else:
+        ts_str = now.strftime("%Y%m%d_%H%M%S")
+        safe_reason = sanitize_filename(reason or "snapshot").replace(" ", "_")[:48]
+        backup_path = os.path.join(backup_dir, f"pathology_{ts_str}_{safe_reason}.db")
+        idx = 1
+        while os.path.exists(backup_path):
+            backup_path = os.path.join(backup_dir, f"pathology_{ts_str}_{safe_reason}_{idx}.db")
+            idx += 1
+
+    src_conn = None
+    dst_conn = None
+    try:
+        src_conn = sqlite3.connect(db_path, timeout=15.0)
+        dst_conn = sqlite3.connect(backup_path, timeout=15.0)
+        src_conn.backup(dst_conn)
+    finally:
+        if dst_conn is not None:
+            dst_conn.close()
+        if src_conn is not None:
+            src_conn.close()
+
+    # Rotate older backups beyond max_backups via Windows Recycle Bin (no silent permanent delete)
+    if max_backups and max_backups > 0:
+        try:
+            candidates = [
+                os.path.join(backup_dir, fn)
+                for fn in os.listdir(backup_dir)
+                if fn.startswith("pathology_") and fn.endswith(".db")
+            ]
+            candidates.sort(key=lambda p: (os.stat(p).st_mtime_ns, os.path.basename(p)), reverse=True)
+            for old_bk in candidates[max_backups:]:
+                if os.path.normcase(os.path.abspath(old_bk)) == os.path.normcase(os.path.abspath(backup_path)):
+                    continue
+                try:
+                    safe_delete_path(old_bk)
+                except RecycleBinFailedError as rbe:
+                    print(f"[DB Backup] 过期备份无法移入回收站，已保留以避免静默永久删除: {rbe}")
+        except Exception as e:
+            print(f"[DB Backup] 轮转清理过期备份提示: {e}")
+
+    return backup_path
+
+
 def init_db(db_path):
     """Initialize database tables, indexes and migrate new columns."""
+    # Capture daily first-launch hot snapshot of existing database before migrations
+    if db_path and os.path.exists(db_path) and os.path.getsize(db_path) > 0:
+        try:
+            backup_database(db_path, reason="daily", max_backups=20)
+        except Exception as e:
+            print(f"[DB Backup] 每日首次启动数据库备份提示: {e}")
+
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         try:
@@ -127,12 +201,18 @@ def init_db(db_path):
             ("review_status", "TEXT DEFAULT '未审核'"),
             ("archived", "INTEGER DEFAULT 0"),
             ("archive_dir", "TEXT DEFAULT ''"),
-            ("clinical_photo_dir", "TEXT DEFAULT ''")
+            ("clinical_photo_dir", "TEXT DEFAULT ''"),
+            ("doc_sync_meta", "TEXT DEFAULT '{}'")
         ]
         
         for col_name, col_type in new_columns:
             if col_name not in existing_cols:
                 cursor.execute(f"ALTER TABLE patients ADD COLUMN {col_name} {col_type}")
+
+        cursor.execute("PRAGMA table_info(ihc_reports)")
+        ihc_cols = {row["name"] for row in cursor.fetchall()}
+        if "doc_sync_meta" not in ihc_cols:
+            cursor.execute("ALTER TABLE ihc_reports ADD COLUMN doc_sync_meta TEXT DEFAULT '{}'")
                 
         conn.commit()
 
@@ -163,6 +243,15 @@ def patient_row_to_dict(row):
             d["selected_images"] = json.loads(d["selected_images"])
         except Exception:
             d["selected_images"] = []
+
+    if isinstance(d.get("doc_sync_meta"), str):
+        try:
+            parsed_meta = json.loads(d["doc_sync_meta"])
+            d["doc_sync_meta"] = parsed_meta if isinstance(parsed_meta, dict) else {}
+        except Exception:
+            d["doc_sync_meta"] = {}
+    elif d.get("doc_sync_meta") is None:
+        d["doc_sync_meta"] = {}
     return d
 
 def get_patient(db_path, pathology_no):
@@ -528,8 +617,13 @@ def update_patient_status(db_path, pathology_no, review_status=None, archived=No
     return get_patient(db_path, p_no)
 
 def delete_patient(db_path, pathology_no):
-    """Delete a patient record from SQLite database."""
+    """Delete a patient record from SQLite database after capturing a pre-delete snapshot."""
     p_no = pathology_no.strip().upper()
+    if db_path and os.path.exists(db_path):
+        try:
+            backup_database(db_path, reason=f"pre_delete_{p_no}", max_backups=20)
+        except Exception as e:
+            print(f"[DB Backup] 删除患者前数据库备份失败，已保留现场提示: {e}")
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM ihc_reports WHERE pathology_no = ?", (p_no,))
@@ -747,6 +841,15 @@ def ihc_row_to_dict(row):
             d["selected_images"] = json.loads(d["selected_images"])
         except Exception:
             d["selected_images"] = []
+
+    if isinstance(d.get("doc_sync_meta"), str):
+        try:
+            parsed_meta = json.loads(d["doc_sync_meta"])
+            d["doc_sync_meta"] = parsed_meta if isinstance(parsed_meta, dict) else {}
+        except Exception:
+            d["doc_sync_meta"] = {}
+    elif d.get("doc_sync_meta") is None:
+        d["doc_sync_meta"] = {}
     return d
 
 
@@ -883,9 +986,109 @@ def revoke_ihc_archive_db(db_path, pathology_no):
     return get_ihc_report(db_path, p_no)
 
 
+def update_patient_doc_sync_meta(db_path, pathology_no, doc_sync_meta):
+    """Persist doc_sync_meta fingerprint dictionary on patients table."""
+    p_no = str(pathology_no or "").strip().upper()
+    meta_json = json.dumps(doc_sync_meta if isinstance(doc_sync_meta, dict) else {}, ensure_ascii=False)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE patients SET doc_sync_meta = ? WHERE pathology_no = ?",
+            (meta_json, p_no)
+        )
+        conn.commit()
+    return get_patient(db_path, p_no)
+
+
+def update_ihc_doc_sync_meta(db_path, pathology_no, doc_sync_meta):
+    """Persist doc_sync_meta fingerprint dictionary on ihc_reports table."""
+    p_no = str(pathology_no or "").strip().upper()
+    meta_json = json.dumps(doc_sync_meta if isinstance(doc_sync_meta, dict) else {}, ensure_ascii=False)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE ihc_reports SET doc_sync_meta = ? WHERE pathology_no = ?",
+            (meta_json, p_no)
+        )
+        conn.commit()
+    return get_ihc_report(db_path, p_no)
+
+
+def update_patient_fields_from_external(db_path, pathology_no, updates):
+    """Selectively update parsed external Word fields (demographics/report/paths/archived) on patients."""
+    p_no = str(pathology_no or "").strip().upper()
+    existing = get_patient(db_path, p_no)
+    if not existing:
+        return None
+    allowed = {
+        "name", "gender", "age", "inpatient_no", "outpatient_no",
+        "referring_doctor", "clinical_diagnosis", "image_count", "biopsy_sites",
+        "medical_history", "submission_date", "submission_date_raw",
+        "report_date", "report_date_raw", "report_doctor", "review_doctor",
+        "word_path", "photo_dir", "pathology_diag", "microscopic_desc",
+        "selected_images", "final_report_path", "send_unit", "department",
+        "review_status", "archived", "archive_dir", "doc_sync_meta"
+    }
+    set_clauses = []
+    values = []
+    for k, v in (updates or {}).items():
+        if k not in allowed:
+            continue
+        if k in ("biopsy_sites", "selected_images", "doc_sync_meta"):
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False)
+        set_clauses.append(f"{k} = ?")
+        values.append(v)
+    if not set_clauses:
+        return existing
+    set_clauses.append("updated_at = ?")
+    values.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    values.append(p_no)
+    sql = "UPDATE patients SET " + ", ".join(set_clauses) + " WHERE pathology_no = ?"
+    with get_connection(db_path) as conn:
+        conn.execute(sql, values)
+        conn.commit()
+    return get_patient(db_path, p_no)
+
+
+def update_ihc_fields_from_external(db_path, pathology_no, updates):
+    """Selectively update parsed external Word fields on ihc_reports."""
+    p_no = str(pathology_no or "").strip().upper()
+    existing = get_ihc_report(db_path, p_no)
+    if not existing:
+        return None
+    allowed = {
+        "ihc_dir", "ihc_doc_path", "ihc_photo_dir", "source_archive_path",
+        "source_archive_filename", "report_doctor", "review_doctor",
+        "report_date", "report_date_raw", "microscopic_desc", "pathology_diag",
+        "selected_images", "image_count", "biopsy_sites", "archived",
+        "archive_file", "doc_sync_meta"
+    }
+    set_clauses = []
+    values = []
+    for k, v in (updates or {}).items():
+        if k not in allowed:
+            continue
+        if k in ("biopsy_sites", "selected_images", "doc_sync_meta"):
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False)
+        set_clauses.append(f"{k} = ?")
+        values.append(v)
+    if not set_clauses:
+        return existing
+    set_clauses.append("updated_at = ?")
+    values.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    values.append(p_no)
+    sql = "UPDATE ihc_reports SET " + ", ".join(set_clauses) + " WHERE pathology_no = ?"
+    with get_connection(db_path) as conn:
+        conn.execute(sql, values)
+        conn.commit()
+    return get_ihc_report(db_path, p_no)
+
+
 def update_ihc_paths(db_path, pathology_no, ihc_dir, ihc_doc_path, ihc_photo_dir,
-                     selected_images=None, mark_rearchive=False):
-    """Update IHC directory/document/photo paths after patient rename."""
+                     selected_images=None, mark_rearchive=False,
+                     source_archive_path=None, source_archive_filename=None,
+                     doc_sync_meta=None):
+    """Update IHC directory/document/photo/source paths after patient rename."""
     p_no = str(pathology_no or "").strip().upper()
     existing = get_ihc_report(db_path, p_no)
     if not existing:
@@ -895,6 +1098,9 @@ def update_ihc_paths(db_path, pathology_no, ihc_dir, ihc_doc_path, ihc_photo_dir
     if mark_rearchive and arch_val in (1, 2):
         arch_val = 2
     sel_imgs = selected_images if selected_images is not None else existing.get("selected_images", [])
+    src_arch_p = source_archive_path if source_archive_path is not None else existing.get("source_archive_path", "")
+    src_arch_fn = source_archive_filename if source_archive_filename is not None else existing.get("source_archive_filename", "")
+    meta_dict = doc_sync_meta if doc_sync_meta is not None else existing.get("doc_sync_meta", {})
     with get_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -902,16 +1108,22 @@ def update_ihc_paths(db_path, pathology_no, ihc_dir, ihc_doc_path, ihc_photo_dir
                 ihc_dir = ?,
                 ihc_doc_path = ?,
                 ihc_photo_dir = ?,
+                source_archive_path = ?,
+                source_archive_filename = ?,
                 selected_images = ?,
                 archived = ?,
+                doc_sync_meta = ?,
                 updated_at = ?
             WHERE pathology_no = ?
         """, (
             ihc_dir,
             ihc_doc_path,
             ihc_photo_dir,
+            src_arch_p,
+            src_arch_fn,
             json.dumps(sel_imgs, ensure_ascii=False),
             int(arch_val),
+            json.dumps(meta_dict if isinstance(meta_dict, dict) else {}, ensure_ascii=False),
             now_str,
             p_no
         ))
@@ -974,7 +1186,8 @@ def _extract_joined_ihc_dict(row_dict):
         "ihc_image_count": "image_count",
         "ihc_biopsy_sites": "biopsy_sites",
         "ihc_archived": "archived",
-        "ihc_archive_file": "archive_file"
+        "ihc_archive_file": "archive_file",
+        "ihc_doc_sync_meta": "doc_sync_meta"
     }
     ihc = {}
     for alias, target in ihc_keys.items():
@@ -984,15 +1197,15 @@ def _extract_joined_ihc_dict(row_dict):
     ihc["ihc_created"] = int(ihc.get("ihc_created") or 0)
     ihc["archived"] = int(ihc.get("archived") or 0)
     ihc["image_count"] = int(ihc.get("image_count") or row_dict.get("image_count") or 1)
-    for json_field in ("selected_images", "biopsy_sites"):
+    for json_field in ("selected_images", "biopsy_sites", "doc_sync_meta"):
         val = ihc.get(json_field)
         if isinstance(val, str):
             try:
                 ihc[json_field] = json.loads(val)
             except Exception:
-                ihc[json_field] = []
+                ihc[json_field] = {} if json_field == "doc_sync_meta" else []
         elif val is None:
-            ihc[json_field] = []
+            ihc[json_field] = {} if json_field == "doc_sync_meta" else []
     row_dict["ihc_report"] = ihc
     return row_dict
 
@@ -1038,7 +1251,8 @@ def get_patients_for_ihc(db_path, report_date=None, submission_date=None, keywor
                ihc.image_count AS ihc_image_count,
                ihc.biopsy_sites AS ihc_biopsy_sites,
                ihc.archived AS ihc_archived,
-               ihc.archive_file AS ihc_archive_file
+               ihc.archive_file AS ihc_archive_file,
+               ihc.doc_sync_meta AS ihc_doc_sync_meta
         FROM patients p
         LEFT JOIN ihc_reports ihc ON p.pathology_no = ihc.pathology_no
         WHERE """ + " AND ".join(conditions) + " ORDER BY p.pathology_no ASC"
@@ -1260,7 +1474,8 @@ def get_output_ihc_patients(db_path, prefix=None, today_only=False, today_str=No
                ihc.image_count AS ihc_image_count,
                ihc.biopsy_sites AS ihc_biopsy_sites,
                ihc.archived AS ihc_archived,
-               ihc.archive_file AS ihc_archive_file
+               ihc.archive_file AS ihc_archive_file,
+               ihc.doc_sync_meta AS ihc_doc_sync_meta
         FROM patients p
         INNER JOIN ihc_reports ihc ON p.pathology_no = ihc.pathology_no
         WHERE """ + " AND ".join(conditions) + " ORDER BY p.pathology_no DESC"
